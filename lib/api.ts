@@ -1,8 +1,7 @@
 import axios from 'axios';
 import { storage } from './storage';
 
-// For physical device testing, replace with your machine's local IP e.g. http://192.168.x.x:3030/api
-export const BASE_URL = 'http://localhost:3030/api';
+export const BASE_URL = 'https://beige-dove-181357.hostingersite.com/api';
 
 const api = axios.create({
   baseURL: BASE_URL,
