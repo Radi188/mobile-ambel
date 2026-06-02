@@ -19,8 +19,8 @@ export type ProductPayload = {
 };
 
 export const productsService = {
-  getProducts: (categoryId?: string, type?: string) =>
-    api.get('/products', { params: { category: categoryId, type } }) as unknown as Promise<Product[]>,
+  getProducts: (categoryId?: string, type?: string, search?: string) =>
+    api.get('/products', { params: { category: categoryId, type, search } }) as unknown as Promise<Product[]>,
 
   getCategories: () =>
     api.get('/categories') as unknown as Promise<Category[]>,

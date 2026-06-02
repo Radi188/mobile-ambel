@@ -73,6 +73,7 @@ const styles = StyleSheet.create({
     height: 80,
     paddingBottom: 20,
     paddingTop: 8,
+    paddingHorizontal: 16,
     elevation: 0,
     shadowOpacity: 0,
   },

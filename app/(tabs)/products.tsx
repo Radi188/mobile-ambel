@@ -579,9 +579,17 @@ export default function ProductsScreen() {
   const [categories, setCategories]   = useState<Category[]>([]);
   const [products, setProducts]       = useState<Product[]>([]);
   const [selectedCat, setSelectedCat] = useState<string | undefined>(undefined);
+  const [search, setSearch]           = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [branches, setBranches]           = useState<Branch[]>([]);
   const [modalVisible, setModalVisible]   = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+
+  // Debounce the search box so we don't hit the API on every keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 350);
+    return () => clearTimeout(t);
+  }, [search]);
 
   const loadBase = useCallback(async () => {
     try {
@@ -596,16 +604,16 @@ export default function ProductsScreen() {
 
   const loadProducts = useCallback(async () => {
     try {
-      const list = await productsService.getProducts(selectedCat);
+      const list = await productsService.getProducts(selectedCat, undefined, debouncedSearch || undefined);
       setProducts(list ?? []);
     } catch {}
-  }, [selectedCat]);
+  }, [selectedCat, debouncedSearch]);
 
   useEffect(() => {
     Promise.all([loadBase(), loadProducts()]).finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => { loadProducts(); }, [selectedCat]);
+  useEffect(() => { loadProducts(); }, [selectedCat, debouncedSearch]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -658,6 +666,27 @@ export default function ProductsScreen() {
           </View>
         ) : (
           <>
+            {/* Search */}
+            <View style={s.searchBox}>
+              <Ionicons name="search" size={17} color={C.textSub} />
+              <TextInput
+                style={s.searchInput}
+                value={search}
+                onChangeText={setSearch}
+                placeholder="Search products by name"
+                placeholderTextColor={C.textDim}
+                autoCapitalize="none"
+                autoCorrect={false}
+                returnKeyType="search"
+                selectionColor={C.dark}
+              />
+              {search.length > 0 && (
+                <TouchableOpacity onPress={() => setSearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Ionicons name="close-circle" size={18} color={C.textDim} />
+                </TouchableOpacity>
+              )}
+            </View>
+
             {/* Category filter */}
             <ScrollView
               horizontal
@@ -688,8 +717,10 @@ export default function ProductsScreen() {
               {products.length === 0 ? (
                 <View style={s.empty}>
                   <Ionicons name="cube-outline" size={36} color={C.textDim} />
-                  <Text style={s.emptyText}>No products found</Text>
-                  {canEdit && (
+                  <Text style={s.emptyText}>
+                    {debouncedSearch ? `No products match “${debouncedSearch}”` : 'No products found'}
+                  </Text>
+                  {canEdit && !debouncedSearch && (
                     <TouchableOpacity onPress={openCreate} activeOpacity={0.7}>
                       <Text style={s.emptyAction}>+ Add your first product</Text>
                     </TouchableOpacity>
@@ -738,6 +769,14 @@ const s = StyleSheet.create({
   addBtnText: { color: '#FFF', fontSize: 13, fontWeight: '600' },
 
   loader: { paddingTop: 64, alignItems: 'center' },
+
+  searchBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: C.card, borderRadius: 12,
+    borderWidth: 1, borderColor: C.border,
+    paddingHorizontal: 14, paddingVertical: 11,
+  },
+  searchInput: { flex: 1, fontSize: 14, color: C.text, padding: 0 },
 
   pillRow: { gap: 8, paddingBottom: 2 },
   pill:     { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20, backgroundColor: C.card, borderWidth: 1, borderColor: C.border },

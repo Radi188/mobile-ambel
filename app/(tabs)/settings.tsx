@@ -136,8 +136,7 @@ export default function SettingsScreen() {
         </SettingGroup>
 
         <SettingGroup title="About">
-          <SettingRow label="Version" value="1.0.0" />
-          <SettingRow label="API Endpoint" value="localhost:3030" isLast />
+          <SettingRow label="Version" value="1.0.0" isLast />
         </SettingGroup>
 
         {/* Sign Out */}
