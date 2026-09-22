@@ -1,302 +1,107 @@
+import { useEffect, useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  ActivityIndicator,
-  Animated,
-  ScrollView,
-  Image,
-} from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
-import { useState, useRef, useEffect } from "react";
-import { Ionicons } from "@expo/vector-icons";
-import { useAuth } from "../../context/AuthContext";
-
-// ─── Design Tokens ────────────────────────────────────────────────────────────
-
-const C = {
-  bg: "#0D0D0D",
-  line: "#242424",
-  lineFocus: "#C4A882",
-  text: "#EDE9E3",
-  textSub: "#5A5A5A",
-  textMuted: "#2E2E2E",
-  accent: "#C4A882",
-  accentDim: "rgba(196,168,130,0.08)",
-  err: "#CF6679",
-  errBg: "rgba(207,102,121,0.08)",
-  errBorder: "rgba(207,102,121,0.22)",
-};
-
-// ─── Input ────────────────────────────────────────────────────────────────────
-
-type InputProps = {
-  label: string;
-  value: string;
-  onChangeText: (v: string) => void;
-  secureTextEntry?: boolean;
-  keyboardType?: "email-address" | "default";
-  autoComplete?: "email" | "password" | "off";
-  autoCapitalize?: "none" | "sentences";
-};
-
-function Input({
-  label,
-  value,
-  onChangeText,
-  secureTextEntry,
-  keyboardType,
-  autoComplete,
-  autoCapitalize,
-}: InputProps) {
-  const [focused, setFocused] = useState(false);
-  const [showPw, setShowPw] = useState(false);
-  const anim = useRef(new Animated.Value(value.length > 0 ? 1 : 0)).current;
-  const lineAnim = useRef(new Animated.Value(0)).current;
-
-  const floated = focused || value.length > 0;
-
-  useEffect(() => {
-    Animated.timing(anim, {
-      toValue: floated ? 1 : 0,
-      duration: 200,
-      useNativeDriver: false,
-    }).start();
-  }, [floated]);
-
-  useEffect(() => {
-    Animated.timing(lineAnim, {
-      toValue: focused ? 1 : 0,
-      duration: 260,
-      useNativeDriver: false,
-    }).start();
-  }, [focused]);
-
-  const labelTop = anim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [20, 0],
-  });
-  const labelSize = anim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [14, 10],
-  });
-  const labelColor = anim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [C.textSub, C.accent],
-  });
-  const lineColor = lineAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [C.line, C.lineFocus],
-  });
-
-  return (
-    <View style={s.inputWrap}>
-      <Animated.Text
-        style={[
-          s.inputLabel,
-          { top: labelTop, fontSize: labelSize, color: labelColor },
-        ]}
-      >
-        {label}
-      </Animated.Text>
-      <TextInput
-        style={s.inputField}
-        value={value}
-        onChangeText={onChangeText}
-        secureTextEntry={secureTextEntry && !showPw}
-        keyboardType={keyboardType ?? "default"}
-        autoComplete={autoComplete ?? "off"}
-        autoCapitalize={autoCapitalize ?? "none"}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-        selectionColor={C.accent}
-        keyboardAppearance="dark"
-      />
-      {secureTextEntry && (
-        <TouchableOpacity
-          onPress={() => setShowPw((v) => !v)}
-          style={s.eyeBtn}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-        >
-          <Ionicons
-            name={showPw ? "eye-outline" : "eye-off-outline"}
-            size={16}
-            color={C.textSub}
-          />
-        </TouchableOpacity>
-      )}
-      <Animated.View style={[s.inputLine, { backgroundColor: lineColor }]} />
-    </View>
-  );
-}
-
-// ─── Screen ───────────────────────────────────────────────────────────────────
+  Animated, Image, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import { Button, TextField } from '../../components/ui';
+import { useAuth } from '../../context/AuthContext';
+import { colors, layout, radius, shadow, space, text } from '../../constants/theme';
 
 export default function LoginScreen() {
   const { login } = useAuth();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState('');
 
-  const brandOp = useRef(new Animated.Value(0)).current;
-  const brandY = useRef(new Animated.Value(18)).current;
-  const formOp = useRef(new Animated.Value(0)).current;
-  const formY = useRef(new Animated.Value(24)).current;
-  const btnScale = useRef(new Animated.Value(1)).current;
+  const brand = useRef(new Animated.Value(0)).current;
+  const form = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    Animated.stagger(100, [
-      Animated.parallel([
-        Animated.timing(brandOp, {
-          toValue: 1,
-          duration: 900,
-          useNativeDriver: true,
-        }),
-        Animated.timing(brandY, {
-          toValue: 0,
-          duration: 900,
-          useNativeDriver: true,
-        }),
-      ]),
-      Animated.parallel([
-        Animated.timing(formOp, {
-          toValue: 1,
-          duration: 700,
-          useNativeDriver: true,
-        }),
-        Animated.timing(formY, {
-          toValue: 0,
-          duration: 700,
-          useNativeDriver: true,
-        }),
-      ]),
+    Animated.stagger(120, [
+      Animated.timing(brand, { toValue: 1, duration: 620, useNativeDriver: true }),
+      Animated.timing(form, { toValue: 1, duration: 560, useNativeDriver: true }),
     ]).start();
   }, []);
 
+  const rise = (v: Animated.Value, distance: number) => ({
+    opacity: v,
+    transform: [{ translateY: v.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }) }],
+  });
+
   const handleLogin = async () => {
-    if (!email.trim() || !password.trim()) {
-      setError("Please enter your email and password.");
+    if (!username.trim() || !password.trim()) {
+      setError('Enter your username and password.');
       return;
     }
-    setError("");
+    setError('');
     setLoading(true);
     try {
-      await login(email.trim(), password);
+      await login(username.trim(), password);
     } catch (e: any) {
-      setError(e.message ?? "Invalid credentials. Please try again.");
+      setError(e?.message ?? 'Invalid credentials. Please try again.');
     } finally {
       setLoading(false);
     }
   };
 
-  const pressIn = () =>
-    Animated.spring(btnScale, {
-      toValue: 0.97,
-      useNativeDriver: true,
-      speed: 60,
-      bounciness: 0,
-    }).start();
-  const pressOut = () =>
-    Animated.spring(btnScale, {
-      toValue: 1,
-      useNativeDriver: true,
-      speed: 60,
-      bounciness: 3,
-    }).start();
-
   return (
     <SafeAreaView style={s.safe}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={s.flex}
-        keyboardVerticalOffset={0}
-      >
+      <KeyboardAvoidingView style={s.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <ScrollView
           contentContainerStyle={s.scroll}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
-          bounces={false}
         >
-          {/* ── Brand ── */}
-          <Animated.View
-            style={[
-              s.brand,
-              { opacity: brandOp, transform: [{ translateY: brandY }] },
-            ]}
-          >
-            <View style={s.logoCard}>
-              <Image
-                source={require("../../assets/logo.png")}
-                style={s.logoImg}
-                resizeMode="contain"
-              />
-            </View>
-            <Text style={s.brandSub}>POS SYSTEM</Text>
-          </Animated.View>
-
-          {/* ── Form ── */}
-          <Animated.View
-            style={[
-              s.form,
-              { opacity: formOp, transform: [{ translateY: formY }] },
-            ]}
-          >
-            <View style={s.formHead}>
-              <Text style={s.formTitle}>Welcome back</Text>
-              <Text style={s.formSub}>Sign in to your account</Text>
-            </View>
-
-            <View style={s.fields}>
-              <Input
-                label="Email address"
-                value={email}
-                onChangeText={setEmail}
-                keyboardType="email-address"
-                autoComplete="email"
-              />
-              <Input
-                label="Password"
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry
-                autoComplete="password"
-              />
-            </View>
-
-            {error ? (
-              <View style={s.errWrap}>
-                <Ionicons name="alert-circle-outline" size={13} color={C.err} />
-                <Text style={s.errText}>{error}</Text>
+          <View style={s.column}>
+            <Animated.View style={[s.brand, rise(brand, 16)]}>
+              <View style={s.mark}>
+                <Image source={require('../../assets/logo-mark.png')} style={s.logo} resizeMode="contain" />
               </View>
-            ) : null}
-
-            <Animated.View style={{ transform: [{ scale: btnScale }] }}>
-              <TouchableOpacity
-                style={[s.btn, loading && s.btnBusy]}
-                onPress={handleLogin}
-                onPressIn={pressIn}
-                onPressOut={pressOut}
-                activeOpacity={1}
-                disabled={loading}
-              >
-                {loading ? (
-                  <ActivityIndicator color={C.bg} size="small" />
-                ) : (
-                  <Text style={s.btnText}>SIGN IN</Text>
-                )}
-              </TouchableOpacity>
+              <Text style={text.overline}>BongPOS Owner</Text>
             </Animated.View>
-          </Animated.View>
 
-          {/* ── Footer ── */}
+            <Animated.View style={[s.form, rise(form, 22)]}>
+              <View style={s.heading}>
+                <Text style={text.title}>Welcome back</Text>
+                <Text style={text.small}>Sign in to manage your branch.</Text>
+              </View>
+
+              <View style={s.fields}>
+                <TextField
+                  label="Username"
+                  icon="person-outline"
+                  value={username}
+                  onChangeText={setUsername}
+                  placeholder="Enter your username"
+                  autoCapitalize="none"
+                />
+                <TextField
+                  label="Password"
+                  icon="lock-closed-outline"
+                  value={password}
+                  onChangeText={setPassword}
+                  placeholder="Enter your password"
+                  autoCapitalize="none"
+                  secure
+                />
+              </View>
+
+              {!!error && (
+                <View style={s.error}>
+                  <Ionicons name="alert-circle" size={16} color={colors.text} />
+                  <Text style={[text.small, s.errorText]}>{error}</Text>
+                </View>
+              )}
+
+              <Button label="Sign in" onPress={handleLogin} loading={loading} size="lg" full iconRight="arrow-forward" />
+            </Animated.View>
+          </View>
+
           <View style={s.footer}>
-            <View style={s.footerLine} />
-            <Text style={s.footerText}>© 2026 Ambel · All rights reserved</Text>
+            <View style={s.rule} />
+            <Text style={text.micro}>© 2026 BongPOS · All rights reserved</Text>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -304,148 +109,59 @@ export default function LoginScreen() {
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
 const s = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: C.bg },
+  safe: { flex: 1, backgroundColor: colors.background },
   flex: { flex: 1 },
   scroll: {
     flexGrow: 1,
-    paddingHorizontal: 36,
-    paddingTop: 60,
-    paddingBottom: 36,
-    justifyContent: "space-between",
+    paddingHorizontal: layout.gutter,
+    paddingTop: space.huge,
+    paddingBottom: space.xxl,
+    justifyContent: 'space-between',
+    gap: space.xxxl,
   },
+  column: { width: '100%', maxWidth: 440, alignSelf: 'center', gap: space.xxxl },
 
-  // Brand
-  brand: {
-    alignItems: "center",
-    gap: 14,
-    marginBottom: 52,
+  brand: { alignItems: 'center', gap: space.md },
+  mark: {
+    width: 96,
+    height: 96,
+    borderRadius: radius.xl,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: space.md,
+    ...shadow.sm,
   },
-  logoCard: {
-    width: 136,
-    height: 136,
-    borderRadius: 18,
-    backgroundColor: "#FFFFFF",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 16,
-    shadowColor: "#C4A882",
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.16,
-    shadowRadius: 28,
-    elevation: 10,
-  },
-  logoImg: {
-    width: 104,
-    height: 104,
-  },
-  brandSub: {
-    fontSize: 9,
-    letterSpacing: 4.5,
-    color: C.textSub,
-    fontWeight: "500",
-    marginLeft: 4,
-  },
+  logo: { width: 68, height: 68 },
 
-  // Form
-  form: { gap: 32 },
-  formHead: { gap: 6 },
-  formTitle: {
-    fontSize: 26,
-    fontWeight: "300",
-    color: C.text,
-    letterSpacing: -0.3,
-    fontFamily: Platform.select({ ios: "Georgia", android: "serif" }),
+  form: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.xl,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: space.xxl,
+    gap: space.xxl,
+    ...shadow.sm,
   },
-  formSub: {
-    fontSize: 13,
-    color: C.textSub,
-    fontWeight: "400",
-    letterSpacing: 0.1,
-  },
-  fields: { gap: 30 },
+  heading: { gap: space.xs },
+  fields: { gap: space.lg },
 
-  // Input
-  inputWrap: {
-    position: "relative",
-    height: 54,
-    justifyContent: "flex-end",
+  error: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    backgroundColor: colors.surfaceSunken,
+    borderWidth: 1,
+    borderColor: colors.text,
+    borderRadius: 14,
+    paddingHorizontal: space.lg - 2,
+    paddingVertical: space.md,
   },
-  inputLabel: {
-    position: "absolute",
-    left: 0,
-    fontWeight: "500",
-    letterSpacing: 0.5,
-  },
-  inputField: {
-    height: 34,
-    fontSize: 15,
-    color: C.text,
-    paddingBottom: 6,
-    paddingRight: 30,
-    letterSpacing: 0.2,
-  },
-  inputLine: {
-    height: StyleSheet.hairlineWidth,
-  },
-  eyeBtn: {
-    position: "absolute",
-    right: 0,
-    bottom: 10,
-  },
+  errorText: { flex: 1, color: colors.text, fontWeight: '500' },
 
-  // Error
-  errWrap: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: C.errBg,
-    borderRadius: 6,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: C.errBorder,
-    marginTop: -8,
-  },
-  errText: {
-    fontSize: 13,
-    color: C.err,
-    fontWeight: "400",
-    flex: 1,
-  },
-
-  // Button
-  btn: {
-    backgroundColor: C.text,
-    height: 52,
-    borderRadius: 4,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  btnBusy: { opacity: 0.65 },
-  btnText: {
-    color: C.bg,
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 3.5,
-  },
-
-  // Footer
-  footer: {
-    alignItems: "center",
-    gap: 12,
-    marginTop: 48,
-  },
-  footerLine: {
-    width: 24,
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: C.textMuted,
-  },
-  footerText: {
-    fontSize: 11,
-    color: C.textMuted,
-    letterSpacing: 0.3,
-  },
+  footer: { alignItems: 'center', gap: space.md },
+  rule: { width: 24, height: StyleSheet.hairlineWidth, backgroundColor: colors.borderStrong },
 });

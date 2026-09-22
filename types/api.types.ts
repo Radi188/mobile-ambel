@@ -1,3 +1,63 @@
+// ─── Paging ──────────────────────────────────────────────────────────────────
+
+/**
+ * Envelope every list endpoint returns.
+ *
+ * The REST contract the app expects:
+ *   GET /<resource>?page=1&limit=20&...filters
+ *   → { items: [...], page: 1, pageSize: 20, total: 137, hasMore: true }
+ *
+ * `page` is 1-based. `hasMore` is authoritative — the app appends pages until
+ * it is false rather than comparing counts itself, so a server that can't cheaply
+ * produce `total` may return 0 for it without breaking infinite scroll.
+ */
+export type Paginated<T> = {
+  items: T[];
+  page: number;
+  pageSize: number;
+  total: number;
+  hasMore: boolean;
+};
+
+/** Query params shared by every list endpoint. */
+export type PageQuery = {
+  page?: number;
+  limit?: number;
+};
+
+// ─── Billing ─────────────────────────────────────────────────────────────────
+
+export type BillingCycle = 'monthly' | 'yearly';
+
+/**
+ * The price list, served rather than hard-coded in the app so a change doesn't
+ * need a release.
+ *   GET /billing/catalog → PlanCatalog
+ */
+export type PlanCatalog = {
+  currency: string;
+  /** List price vs what the customer actually pays, per month. */
+  base: { listPrice: number; price: number; includedBranches: number };
+  extraBranch: { listPrice: number; price: number };
+  discountLabel: string;
+  yearly: { monthsCharged: number; perks: string[] };
+  /** Services bundled at no cost. */
+  included: string[];
+  platforms: string[];
+  /** Named honestly so the app never implies a module it doesn't have. */
+  notYetAvailable: string[];
+};
+
+/** GET /billing/subscription → Subscription */
+export type Subscription = {
+  plan: 'store';
+  cycle: BillingCycle;
+  /** Total branches on the account, including the one the base plan covers. */
+  branches: number;
+  status: 'active' | 'trial' | 'past_due';
+  renewsAt: string;
+};
+
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
 export type UserRole = 'super_admin' | 'manager' | 'cashier';
@@ -135,6 +195,16 @@ export type ShiftSummary = Shift & {
   totalQr: number;
 };
 
+// GET /shifts/:id/summary — live transaction totals for a shift
+export type ShiftTransactions = {
+  orders: number;
+  revenue: number;
+  cashRevenue: number;
+  cardRevenue: number;
+  qrRevenue: number;
+  totalDiscount: number;
+};
+
 // ─── Payment ─────────────────────────────────────────────────────────────────
 
 export type PaymentMethod = 'cash' | 'card' | 'qr';
@@ -206,6 +276,24 @@ export type ProductReport = {
   topProducts: ProductReportItem[];
   bottomProducts: ProductReportItem[];
   byCategory: ProductReportByCategory[];
+};
+
+// GET /reports/orders
+export type OrderSummaryByStatus = {
+  status: OrderStatus | string;
+  count: number;
+  totalValue: number;
+};
+
+export type OrderSummaryReport = {
+  overview: {
+    totalOrders: number;
+    totalValue: number;
+    averageOrderValue: number;
+    avgItemsPerOrder: number;
+  };
+  byStatus: OrderSummaryByStatus[];
+  byDay: { date: string; orders: number; revenue: number }[];
 };
 
 // GET /reports/cashiers

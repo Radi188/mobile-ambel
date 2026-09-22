@@ -1,47 +1,31 @@
-import {
-  ScrollView, View, Text, StyleSheet, TouchableOpacity, TextInput,
-  ActivityIndicator, RefreshControl, Modal, Alert,
-} from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, Modal, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useState, useEffect, useCallback } from 'react';
 import { Ionicons } from '@expo/vector-icons';
+import {
+  Avatar, Badge, Button, Card, Chips, DataRow, Divider, EmptyState, IconButton,
+  ListRow, PagedList, RowCard, Screen, ScreenHeader, SearchField, Skeleton, SkeletonList,
+} from '../../components/ui';
+import { usePaginatedList } from '../../lib/usePaginatedList';
 import { useAuth } from '../../context/AuthContext';
 import { ordersService } from '../../services/orders.service';
-import { Order, OrderItem, OrderStatus, Branch } from '../../types/api.types';
+import { reportsService } from '../../services/reports.service';
+import { Order, OrderItem, OrderStatus, OrderSummaryReport } from '../../types/api.types';
+import {
+  colors, count, money, money2, plural, radius, space, text, toNumber,
+} from '../../constants/theme';
 
-// ─── Tokens ────────────────────────────────────────────────────────────────────
-
-const C = {
-  bg:       '#F5F4F0',
-  card:     '#FFFFFF',
-  dark:     '#0D0D0D',
-  border:   '#EBEBEB',
-  text:     '#111111',
-  textSub:  '#888888',
-  textDim:  '#BBBBBB',
-  danger:   '#EF4444',
-  dangerBg: '#FEF2F2',
-};
-
-const STATUS_MAP: Record<string, { label: string; color: string; bg: string }> = {
-  completed: { label: 'Completed', color: '#065F46', bg: '#D1FAE5' },
-  cancelled: { label: 'Cancelled', color: '#991B1B', bg: '#FEE2E2' },
-};
+const PAGE_SIZE = 20;
 
 type StatusFilter = 'all' | OrderStatus;
 
 const FILTERS: { key: StatusFilter; label: string }[] = [
-  { key: 'all',       label: 'All' },
+  { key: 'all', label: 'All' },
   { key: 'completed', label: 'Completed' },
   { key: 'cancelled', label: 'Cancelled' },
 ];
 
-// ─── Helpers ───────────────────────────────────────────────────────────────────
-
-function money(v: unknown): string {
-  const n = Number(v);
-  return `$${(isFinite(n) ? n : 0).toFixed(2)}`;
-}
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function branchName(order: Order): string {
   const b = order.branch;
@@ -53,73 +37,137 @@ function productName(item: OrderItem): string {
 }
 
 function itemCount(order: Order): number {
-  return (order.items ?? []).reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
+  return (order.items ?? []).reduce((sum, it) => sum + toNumber(it.quantity), 0);
 }
 
 function lineTotal(item: OrderItem): number {
   if (typeof item.itemTotal === 'number') return item.itemTotal;
-  const toppings = (item.toppings ?? []).reduce((s, t) => s + (Number(t.price) || 0), 0);
-  return (Number(item.unitPrice) + toppings) * Number(item.quantity);
+  const toppings = (item.toppings ?? []).reduce((sum, t) => sum + toNumber(t.price), 0);
+  return (toNumber(item.unitPrice) + toppings) * toNumber(item.quantity);
 }
 
 function dateTime(dateStr: string): string {
   return new Date(dateStr).toLocaleString(undefined, {
-    day: '2-digit', month: 'short', year: 'numeric',
-    hour: '2-digit', minute: '2-digit',
+    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
   });
 }
 
-function StatusChip({ status }: { status: string }) {
-  const st = STATUS_MAP[status] ?? STATUS_MAP.completed;
-  return (
-    <View style={[s.chip, { backgroundColor: st.bg }]}>
-      <Text style={[s.chipText, { color: st.color }]}>{st.label}</Text>
-    </View>
-  );
+function StatusBadge({ status }: { status: string }) {
+  const cancelled = status === 'cancelled';
+  return <Badge label={cancelled ? 'Cancelled' : 'Completed'} tone={cancelled ? 'outline' : 'solid'} />;
 }
 
-// ─── Order Card ──────────────────────────────────────────────────────────────────
+// ─── Totals ───────────────────────────────────────────────────────────────────
 
-function OrderCard({ order, onPress }: { order: Order; onPress: () => void }) {
-  const branch = branchName(order);
-  const count = itemCount(order);
+type Totals = {
+  sales: number;
+  orders: number;
+  cancelled: number;
+  avgOrder: number;
+  avgItems: number;
+  allTime: boolean;
+};
+
+/**
+ * All-time totals come from /reports/orders, which aggregates in Mongo over the
+ * whole collection — the list itself is capped at 50 rows, so summing it would
+ * silently under-report.
+ */
+function totalsFromReport(r: OrderSummaryReport): Totals {
+  const cancelled = r.byStatus.find(b => b.status === 'cancelled');
+  const cancelledCount = cancelled?.count ?? 0;
+  // overview.totalValue counts every order regardless of status; strip the
+  // cancelled ones so the headline is money actually taken.
+  const sales = (r.overview.totalValue ?? 0) - (cancelled?.totalValue ?? 0);
+  const netOrders = (r.overview.totalOrders ?? 0) - cancelledCount;
+
+  return {
+    sales,
+    orders: netOrders,
+    cancelled: cancelledCount,
+    avgOrder: netOrders > 0 ? sales / netOrders : 0,
+    avgItems: r.overview.avgItemsPerOrder ?? 0,
+    allTime: true,
+  };
+}
+
+/** Fallback for cashiers, who aren't allowed to call the reports endpoint. */
+function totalsFromList(orders: Order[]): Totals {
+  let sales = 0;
+  let net = 0;
+  let cancelled = 0;
+  let items = 0;
+
+  for (const o of orders) {
+    if (o.status === 'cancelled') { cancelled += 1; continue; }
+    net += 1;
+    sales += toNumber(o.total);
+    items += itemCount(o);
+  }
+
+  return {
+    sales,
+    orders: net,
+    cancelled,
+    avgOrder: net > 0 ? sales / net : 0,
+    avgItems: net > 0 ? items / net : 0,
+    allTime: false,
+  };
+}
+
+function TotalsCard({ totals, loading }: { totals: Totals | null; loading: boolean }) {
   return (
-    <TouchableOpacity style={s.oCard} onPress={onPress} activeOpacity={0.7}>
-      <View style={s.oLeft}>
-        <View style={s.oTopLine}>
-          <Text style={s.oCustomer} numberOfLines={1}>{order.customerName || 'Walk-in'}</Text>
-          <StatusChip status={order.status} />
-        </View>
-        {!!order.orderNumber && <Text style={s.oNumber}>#{order.orderNumber}</Text>}
-        <View style={s.oMeta}>
-          {!!branch && <MetaItem icon="business-outline" text={branch} />}
-          {!!order.cashierName && <MetaItem icon="person-outline" text={order.cashierName} />}
-        </View>
-        <View style={s.oMeta}>
-          <MetaItem icon="cube-outline" text={`${count} item${count === 1 ? '' : 's'}`} />
-          <MetaItem icon="time-outline" text={dateTime(order.createdAt)} />
-        </View>
+    <Card tone="inverse" style={t.card}>
+      <Text style={[text.overline, { color: colors.textInverseDim }]}>
+        {totals?.allTime === false ? 'Sales · listed orders' : 'Total sales · all time'}
+      </Text>
+
+      {loading || !totals ? (
+        <View style={t.loading}><Skeleton width="58%" height={38} radius={12} onDark /></View>
+      ) : (
+        <Text style={[text.display, { color: colors.textInverse }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
+          {money(totals.sales)}
+        </Text>
+      )}
+
+      <Text style={[text.caption, { color: colors.textInverseSub }]}>
+        {plural(totals?.orders ?? 0, 'order')}
+        {totals?.cancelled ? ` · ${totals.cancelled} cancelled` : ''}
+      </Text>
+
+      <View style={t.chips}>
+        {[
+          { label: 'Avg order', value: totals ? money2(totals.avgOrder) : '—' },
+          { label: 'Avg items', value: totals ? totals.avgItems.toFixed(1) : '—' },
+          { label: 'Cancelled', value: totals ? count(totals.cancelled) : '—' },
+        ].map(chip => (
+          <View key={chip.label} style={t.chip}>
+            <Text style={[text.micro, { color: colors.textInverseDim }]}>{chip.label}</Text>
+            <Text style={[text.smallStrong, { color: colors.textInverse }]} numberOfLines={1}>{chip.value}</Text>
+          </View>
+        ))}
       </View>
-      <View style={s.oRight}>
-        <Text style={s.oTotal}>{money(order.total)}</Text>
-        <Ionicons name="chevron-forward" size={16} color={C.textDim} />
-      </View>
-    </TouchableOpacity>
+    </Card>
   );
 }
 
-function MetaItem({ icon, text }: { icon: keyof typeof Ionicons.glyphMap; text: string }) {
-  return (
-    <View style={s.metaItem}>
-      <Ionicons name={icon} size={12} color={C.textSub} />
-      <Text style={s.metaText} numberOfLines={1}>{text}</Text>
-    </View>
-  );
-}
+const t = StyleSheet.create({
+  card: { gap: space.xs, padding: space.xxl },
+  loading: { height: 44, justifyContent: 'center' },
+  chips: { flexDirection: 'row', gap: space.sm, marginTop: space.lg },
+  chip: {
+    flex: 1,
+    backgroundColor: colors.fillInverse,
+    borderRadius: radius.sm,
+    paddingVertical: space.md - 2,
+    paddingHorizontal: space.md,
+    gap: 3,
+  },
+});
 
-// ─── Order Detail Modal ────────────────────────────────────────────────────────
+// ─── Detail ───────────────────────────────────────────────────────────────────
 
-function OrderDetailModal({
+function OrderDetail({
   order, visible, loading, onClose, onChanged, canEdit,
 }: {
   order: Order | null;
@@ -130,14 +178,13 @@ function OrderDetailModal({
   canEdit: boolean;
 }) {
   const [busy, setBusy] = useState(false);
-
   if (!order) return null;
 
-  const isCancelled = order.status === 'cancelled';
+  const cancelled = order.status === 'cancelled';
 
-  const changeStatus = (status: OrderStatus, confirmTitle: string, confirmMsg: string) => {
-    Alert.alert(confirmTitle, confirmMsg, [
-      { text: 'Cancel', style: 'cancel' },
+  const changeStatus = (status: OrderStatus, title: string, message: string) => {
+    Alert.alert(title, message, [
+      { text: 'Back', style: 'cancel' },
       {
         text: 'Confirm',
         style: status === 'cancelled' ? 'destructive' : 'default',
@@ -148,7 +195,7 @@ function OrderDetailModal({
             onChanged();
             onClose();
           } catch (e: any) {
-            Alert.alert('Error', e?.message ?? 'Could not update order.');
+            Alert.alert('Error', e?.message ?? 'Could not update this order.');
           } finally {
             setBusy(false);
           }
@@ -159,8 +206,8 @@ function OrderDetailModal({
 
   const handleDelete = () => {
     Alert.alert(
-      'Delete Order',
-      `Permanently delete order ${order.orderNumber ? `#${order.orderNumber}` : ''}? This cannot be undone.`,
+      'Delete order',
+      `Permanently delete ${order.orderNumber ? `order #${order.orderNumber}` : 'this order'}? This cannot be undone.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -173,121 +220,123 @@ function OrderDetailModal({
               onChanged();
               onClose();
             } catch (e: any) {
-              Alert.alert('Error', e?.message ?? 'Could not delete order.');
+              Alert.alert('Error', e?.message ?? 'Could not delete this order.');
             } finally {
               setBusy(false);
             }
           },
         },
-      ]
+      ],
     );
   };
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <SafeAreaView style={m.safe}>
-        {/* Header */}
-        <View style={m.header}>
-          <TouchableOpacity onPress={onClose} style={m.iconBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Ionicons name="close" size={22} color={C.text} />
-          </TouchableOpacity>
-          <Text style={m.title}>Order Details</Text>
-          {canEdit ? (
-            <TouchableOpacity onPress={handleDelete} style={m.iconBtn} disabled={busy} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Ionicons name="trash-outline" size={20} color={C.danger} />
-            </TouchableOpacity>
-          ) : (
-            <View style={{ width: 36 }} />
-          )}
+      <SafeAreaView style={d.safe} edges={['top', 'bottom']}>
+        <View style={d.header}>
+          <IconButton icon="close" onPress={onClose} label="Close" size={36} />
+          <Text style={text.h2}>Order</Text>
+          {canEdit
+            ? <IconButton icon="trash-outline" onPress={handleDelete} disabled={busy} label="Delete" size={36} />
+            : <View style={d.spacer} />}
         </View>
 
-        <ScrollView contentContainerStyle={m.scroll} showsVerticalScrollIndicator={false}>
-          {/* Summary */}
-          <View style={m.summary}>
-            <View style={m.summaryTop}>
-              <View style={{ flex: 1 }}>
-                <Text style={m.summaryCustomer}>{order.customerName || 'Walk-in'}</Text>
-                {!!order.orderNumber && <Text style={m.summaryNumber}>#{order.orderNumber}</Text>}
+        <ScrollView contentContainerStyle={d.scroll} showsVerticalScrollIndicator={false}>
+          <Card style={d.summary}>
+            <View style={d.summaryTop}>
+              <Avatar name={order.customerName || 'Walk in'} size={46} />
+              <View style={d.summaryCopy}>
+                <Text style={text.h1} numberOfLines={1}>{order.customerName || 'Walk-in'}</Text>
+                {!!order.orderNumber && <Text style={text.caption}>#{order.orderNumber}</Text>}
               </View>
-              <StatusChip status={order.status} />
+              <StatusBadge status={order.status} />
             </View>
-            <View style={m.summaryRows}>
+
+            <Divider />
+
+            <View style={d.infoRows}>
               {!!branchName(order) && <InfoRow icon="business-outline" label="Branch" value={branchName(order)} />}
               {!!order.cashierName && <InfoRow icon="person-outline" label="Cashier" value={order.cashierName} />}
               <InfoRow icon="time-outline" label="Placed" value={dateTime(order.createdAt)} />
             </View>
+          </Card>
+
+          <View style={d.section}>
+            <Text style={text.overline}>{plural(itemCount(order), 'item')}</Text>
+            <Card padded={false}>
+              {loading && (
+                <View style={d.itemsLoading}>
+                  {[0, 1, 2].map(idx => (
+                    <View key={idx} style={d.loadingRow}>
+                      <Skeleton width={34} height={30} radius={10} />
+                      <View style={d.loadingBody}>
+                        <Skeleton width={`${58 + idx * 8}%`} height={12} />
+                        <Skeleton width="32%" height={10} />
+                      </View>
+                      <Skeleton width={44} height={12} />
+                    </View>
+                  ))}
+                </View>
+              )}
+              {(order.items ?? []).map((item, idx, arr) => (
+                <View key={idx}>
+                  {idx > 0 && <Divider inset={space.lg} />}
+                  <View style={d.itemRow}>
+                    <View style={d.qty}><Text style={d.qtyText}>{item.quantity}×</Text></View>
+                    <View style={d.itemCopy}>
+                      <Text style={text.bodyStrong} numberOfLines={1}>{productName(item)}</Text>
+                      <Text style={text.caption}>
+                        {item.size}{item.unitPrice ? ` · ${money2(item.unitPrice)}` : ''}
+                      </Text>
+                      {(item.toppings ?? []).length > 0 && (
+                        <Text style={text.micro} numberOfLines={2}>
+                          + {(item.toppings ?? []).map(top => top.name).join(', ')}
+                        </Text>
+                      )}
+                    </View>
+                    <Text style={text.money}>{money2(lineTotal(item))}</Text>
+                  </View>
+                </View>
+              ))}
+            </Card>
           </View>
 
-          {/* Items */}
-          <Text style={m.sectionLabel}>ITEMS ({itemCount(order)})</Text>
-          <View style={m.itemsCard}>
-            {loading && (
-              <View style={m.itemsLoader}>
-                <ActivityIndicator size="small" color={C.textDim} />
-              </View>
+          <Card>
+            <DataRow label="Subtotal" value={money2(order.subtotal)} />
+            {toNumber(order.discountAmount) > 0 && (
+              <DataRow label="Discount" value={`– ${money2(order.discountAmount)}`} />
             )}
-            {(order.items ?? []).map((item, i, arr) => (
-              <View key={i} style={[m.itemRow, i < arr.length - 1 && m.itemRowBorder]}>
-                <View style={m.itemQty}>
-                  <Text style={m.itemQtyText}>{item.quantity}×</Text>
-                </View>
-                <View style={m.itemInfo}>
-                  <Text style={m.itemName} numberOfLines={1}>{productName(item)}</Text>
-                  <Text style={m.itemSub}>
-                    {item.size}{item.unitPrice ? ` · ${money(item.unitPrice)}` : ''}
-                  </Text>
-                  {(item.toppings ?? []).length > 0 && (
-                    <Text style={m.itemToppings} numberOfLines={2}>
-                      + {(item.toppings ?? []).map(t => t.name).join(', ')}
-                    </Text>
-                  )}
-                </View>
-                <Text style={m.itemTotal}>{money(lineTotal(item))}</Text>
-              </View>
-            ))}
-          </View>
-
-          {/* Totals */}
-          <View style={m.totalsCard}>
-            <TotalRow label="Subtotal" value={money(order.subtotal)} />
-            {Number(order.discountAmount) > 0 && (
-              <TotalRow label="Discount" value={`– ${money(order.discountAmount)}`} />
-            )}
-            <View style={m.totalsDivider} />
-            <TotalRow label="Total" value={money(order.total)} strong />
-          </View>
+            <Divider />
+            <DataRow label="Total" value={money2(order.total)} strong />
+          </Card>
 
           {!!order.note && (
-            <View style={m.noteCard}>
-              <Ionicons name="document-text-outline" size={15} color={C.textSub} />
-              <Text style={m.noteText}>{order.note}</Text>
-            </View>
+            <Card style={d.note}>
+              <Ionicons name="document-text-outline" size={16} color={colors.textSecondary} />
+              <Text style={[text.small, d.noteText]}>{order.note}</Text>
+            </Card>
           )}
         </ScrollView>
 
-        {/* Footer actions */}
         {canEdit && (
-          <View style={m.footer}>
-            {isCancelled ? (
-              <TouchableOpacity
-                style={[m.actionBtn, m.actionPrimary, busy && m.busy]}
-                onPress={() => changeStatus('completed', 'Restore Order', 'Mark this order as completed again?')}
-                disabled={busy}
-                activeOpacity={0.85}
-              >
-                {busy ? <ActivityIndicator color="#FFF" size="small" />
-                      : <Text style={m.actionPrimaryText}>Mark Completed</Text>}
-              </TouchableOpacity>
+          <View style={d.footer}>
+            {cancelled ? (
+              <Button
+                label="Mark completed"
+                onPress={() => changeStatus('completed', 'Restore order', 'Mark this order as completed again?')}
+                loading={busy}
+                size="lg"
+                full
+              />
             ) : (
-              <TouchableOpacity
-                style={[m.actionBtn, m.actionDanger, busy && m.busy]}
-                onPress={() => changeStatus('cancelled', 'Cancel Order', 'Cancel this order? It will be marked as cancelled.')}
-                disabled={busy}
-                activeOpacity={0.85}
-              >
-                {busy ? <ActivityIndicator color={C.danger} size="small" />
-                      : <Text style={m.actionDangerText}>Cancel Order</Text>}
-              </TouchableOpacity>
+              <Button
+                label="Cancel order"
+                onPress={() => changeStatus('cancelled', 'Cancel order', 'This order will be marked as cancelled.')}
+                loading={busy}
+                variant="destructive"
+                size="lg"
+                full
+              />
             )}
           </View>
         )}
@@ -298,330 +347,202 @@ function OrderDetailModal({
 
 function InfoRow({ icon, label, value }: { icon: keyof typeof Ionicons.glyphMap; label: string; value: string }) {
   return (
-    <View style={m.infoRow}>
-      <Ionicons name={icon} size={15} color={C.textSub} />
-      <Text style={m.infoLabel}>{label}</Text>
-      <Text style={m.infoValue} numberOfLines={1}>{value}</Text>
+    <View style={d.infoRow}>
+      <Ionicons name={icon} size={15} color={colors.textTertiary} />
+      <Text style={[text.small, d.infoLabel]}>{label}</Text>
+      <Text style={[text.smallStrong, d.infoValue]} numberOfLines={1}>{value}</Text>
     </View>
   );
 }
 
-function TotalRow({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
-  return (
-    <View style={m.totalRow}>
-      <Text style={[m.totalLabel, strong && m.totalLabelStrong]}>{label}</Text>
-      <Text style={[m.totalValue, strong && m.totalValueStrong]}>{value}</Text>
-    </View>
-  );
-}
+const d = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: colors.background },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: space.md,
+    paddingVertical: space.md,
+    backgroundColor: colors.surface,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  spacer: { width: 36 },
+  scroll: { padding: space.xl, gap: space.lg, paddingBottom: space.xxxl },
+  summary: { gap: space.lg },
+  summaryTop: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  summaryCopy: { flex: 1, gap: 2 },
+  infoRows: { gap: space.md },
+  infoRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  infoLabel: { width: 64 },
+  infoValue: { flex: 1, textAlign: 'right' },
+  section: { gap: space.sm },
+  itemsLoading: { paddingVertical: space.sm },
+  loadingRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, padding: space.lg },
+  loadingBody: { flex: 1, gap: space.sm },
+  itemRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, padding: space.lg },
+  qty: {
+    minWidth: 34, height: 28, borderRadius: radius.xs,
+    alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6,
+    backgroundColor: colors.surfaceSunken,
+  },
+  qtyText: { fontSize: 12, fontWeight: '700', color: colors.text },
+  itemCopy: { flex: 1, gap: 1 },
+  note: { flexDirection: 'row', alignItems: 'flex-start', gap: space.sm },
+  noteText: { flex: 1, color: colors.text, lineHeight: 20 },
+  footer: {
+    padding: space.xl,
+    backgroundColor: colors.surface,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+});
 
-// ─── Screen ────────────────────────────────────────────────────────────────────
+// ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function OrdersScreen() {
   const { user } = useAuth();
-  const isAdmin = user?.role === 'super_admin';
-  const canEdit = isAdmin || user?.role === 'manager';
+  const canEdit = user?.role === 'super_admin' || user?.role === 'manager';
 
-  const [loading, setLoading]     = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [orders, setOrders]       = useState<Order[]>([]);
-  const [filter, setFilter]       = useState<StatusFilter>('all');
-  const [search, setSearch]       = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [branches, setBranches]   = useState<Branch[]>([]);
-  const [branchId, setBranchId]   = useState<string | undefined>(undefined);
-  const [selected, setSelected]   = useState<Order | null>(null);
+  const [filter, setFilter] = useState<StatusFilter>('all');
+  const [search, setSearch] = useState('');
+  const [debounced, setDebounced] = useState('');
+  const [selected, setSelected] = useState<Order | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [totals, setTotals] = useState<Totals | null>(null);
+  const [totalsLoading, setTotalsLoading] = useState(true);
 
   // Debounce the search box so we don't hit the API on every keystroke.
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search.trim()), 350);
-    return () => clearTimeout(t);
+    const id = setTimeout(() => setDebounced(search.trim()), 350);
+    return () => clearTimeout(id);
   }, [search]);
 
-  // Branch filter is admin-only (managers/cashiers are locked to their branch).
-  useEffect(() => {
-    if (!isAdmin) return;
-    ordersService.getBranches().then(b => setBranches(b ?? [])).catch(() => {});
-  }, [isAdmin]);
+  // One page of orders at a time, scoped to the active branch by the service.
+  const orders = usePaginatedList<Order>(
+    page => ordersService.getOrders({
+      page,
+      limit: PAGE_SIZE,
+      status: filter === 'all' ? undefined : filter,
+      search: debounced || undefined,
+    }),
+    [filter, debounced],
+  );
 
-  const load = useCallback(async () => {
+  // The headline totals are all-time aggregates, unaffected by the filters, so
+  // they load alongside the first page and on pull-to-refresh only. Cashiers
+  // get a 403 from the reports endpoint and fall back to the rows on screen.
+  const loadTotals = useCallback(async (loaded: Order[]) => {
     try {
-      const list = await ordersService.getOrders({
-        status: filter === 'all' ? undefined : filter,
-        search: debouncedSearch || undefined,
-        branch: branchId,
-      });
-      setOrders(list ?? []);
+      setTotals(totalsFromReport(await reportsService.getOrderSummary()));
     } catch {
-      setOrders([]);
+      setTotals(totalsFromList(loaded));
     }
-  }, [filter, debouncedSearch, branchId]);
+  }, []);
 
-  // Reload whenever any filter (status, search, branch) changes.
+  const totalsInit = useRef(false);
   useEffect(() => {
-    setLoading(true);
-    load().finally(() => setLoading(false));
-  }, [load]);
+    if (totalsInit.current || orders.loading) return;
+    totalsInit.current = true;
+    loadTotals(orders.items).finally(() => setTotalsLoading(false));
+  }, [orders.loading, orders.items, loadTotals]);
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await load();
-    setRefreshing(false);
-  }, [load]);
+  const onRefresh = useCallback(() => {
+    orders.refresh();
+    loadTotals(orders.items);
+  }, [orders, loadTotals]);
 
   const openDetail = async (order: Order) => {
-    // Show the summary immediately from the list payload, then fetch the fully
-    // populated order (with product/topping names) for the items breakdown.
+    // Show the list payload immediately, then swap in the fully populated order
+    // (with product and topping names) for the items breakdown.
     setSelected(order);
     setDetailOpen(true);
     setDetailLoading(true);
     try {
-      const full = await ordersService.getOrder(order._id);
-      setSelected(full);
+      setSelected(await ordersService.getOrder(order._id));
     } catch {
-      // keep the lightweight version on failure
+      // keep the lightweight version
     } finally {
       setDetailLoading(false);
     }
   };
 
-  const total = orders.reduce((sum, o) => sum + (Number(o.total) || 0), 0);
+  const afterChange = useCallback(() => {
+    orders.reload();
+    loadTotals(orders.items);
+  }, [orders, loadTotals]);
 
   return (
-    <SafeAreaView style={s.safe} edges={['top']}>
-      <ScrollView
-        contentContainerStyle={s.scroll}
-        showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.textDim} />}
-      >
-        {/* Header */}
-        <View style={s.header}>
-          <View>
-            <Text style={s.title}>Sale Orders</Text>
-            <Text style={s.subtitle}>
-              {orders.length} order{orders.length === 1 ? '' : 's'} · {money(total)}
-            </Text>
-          </View>
-        </View>
-
-        {/* Search */}
-        <View style={s.searchBox}>
-          <Ionicons name="search" size={17} color={C.textSub} />
-          <TextInput
-            style={s.searchInput}
-            value={search}
-            onChangeText={setSearch}
-            placeholder="Search order #, customer or cashier"
-            placeholderTextColor={C.textDim}
-            autoCapitalize="none"
-            autoCorrect={false}
-            returnKeyType="search"
-            selectionColor={C.dark}
-          />
-          {search.length > 0 && (
-            <TouchableOpacity onPress={() => setSearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Ionicons name="close-circle" size={18} color={C.textDim} />
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {/* Status filter */}
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.pillRow}>
-          {FILTERS.map(f => (
-            <TouchableOpacity
-              key={f.key}
-              style={[s.pill, filter === f.key && s.pillOn]}
-              onPress={() => setFilter(f.key)}
-              activeOpacity={0.7}
-            >
-              <Text style={[s.pillText, filter === f.key && s.pillTextOn]}>{f.label}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-
-        {/* Branch filter — admin only */}
-        {isAdmin && branches.length > 0 && (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.pillRow}>
-            <TouchableOpacity
-              style={[s.pill, !branchId && s.pillOn]}
-              onPress={() => setBranchId(undefined)}
-              activeOpacity={0.7}
-            >
-              <Text style={[s.pillText, !branchId && s.pillTextOn]}>All Branches</Text>
-            </TouchableOpacity>
-            {branches.map(b => (
-              <TouchableOpacity
-                key={b._id}
-                style={[s.pill, branchId === b._id && s.pillOn]}
-                onPress={() => setBranchId(b._id)}
-                activeOpacity={0.7}
-              >
-                <Text style={[s.pillText, branchId === b._id && s.pillTextOn]}>{b.name}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
+    <Screen scroll={false} padded={false} gap={0}>
+      <PagedList
+        data={orders.items}
+        keyExtractor={order => order._id}
+        refreshing={orders.refreshing}
+        onRefresh={onRefresh}
+        onEndReached={orders.loadMore}
+        loadingMore={orders.loadingMore}
+        hasMore={orders.hasMore}
+        total={orders.total}
+        noun="orders"
+        header={
+          <>
+            <ScreenHeader
+              subtitle="Sales"
+              title="Orders"
+              right={<Badge label={`${count(orders.total)} total`} tone="subtle" />}
+            />
+            <TotalsCard totals={totals} loading={totalsLoading} />
+            <SearchField value={search} onChangeText={setSearch} placeholder="Order #, customer or cashier" />
+            <Chips options={FILTERS} value={filter} onChange={setFilter} />
+          </>
+        }
+        empty={
+          orders.loading ? (
+            <SkeletonList rows={6} avatar={false} />
+          ) : (
+            <Card padded={false}>
+              <EmptyState
+                icon="receipt-outline"
+                title={orders.error ? 'Couldn\u2019t load orders' : debounced ? 'No matching orders' : 'No orders yet'}
+                message={
+                  orders.error
+                    ? orders.error
+                    : debounced
+                      ? `Nothing matches \u201C${debounced}\u201D.`
+                      : 'Completed sales will show up here.'
+                }
+                action={orders.error ? { label: 'Try again', onPress: orders.reload } : undefined}
+              />
+            </Card>
+          )
+        }
+        renderItem={({ item, index }) => (
+          <RowCard first={index === 0} last={index === orders.items.length - 1}>
+            <ListRow
+              title={item.customerName || 'Walk-in'}
+              subtitle={item.orderNumber ? `#${item.orderNumber}` : undefined}
+              leading={<Avatar name={item.customerName || 'Walk in'} size={42} tone="sunken" />}
+              badge={<StatusBadge status={item.status} />}
+              meta={[
+                { icon: 'cube-outline', text: plural(itemCount(item), 'item') },
+                { icon: 'time-outline', text: dateTime(item.createdAt) },
+              ]}
+              value={money2(item.total)}
+              onPress={() => openDetail(item)}
+            />
+          </RowCard>
         )}
+      />
 
-        {loading ? (
-          <View style={s.loader}><ActivityIndicator size="large" color={C.textDim} /></View>
-        ) : orders.length === 0 ? (
-          <View style={s.card}>
-            <View style={s.empty}>
-              <Ionicons name="receipt-outline" size={36} color={C.textDim} />
-              <Text style={s.emptyText}>
-                {debouncedSearch ? `No orders match “${debouncedSearch}”` : 'No orders found'}
-              </Text>
-            </View>
-          </View>
-        ) : (
-          <View style={s.card}>
-            {orders.map((o, i) => (
-              <View key={o._id}>
-                <OrderCard order={o} onPress={() => openDetail(o)} />
-                {i < orders.length - 1 && <View style={s.divider} />}
-              </View>
-            ))}
-          </View>
-        )}
-      </ScrollView>
-
-      <OrderDetailModal
+      <OrderDetail
         order={selected}
         visible={detailOpen}
         loading={detailLoading}
         onClose={() => setDetailOpen(false)}
-        onChanged={() => load()}
+        onChanged={afterChange}
         canEdit={canEdit}
       />
-    </SafeAreaView>
+    </Screen>
   );
 }
-
-// ─── Styles ────────────────────────────────────────────────────────────────────
-
-const s = StyleSheet.create({
-  safe:   { flex: 1, backgroundColor: C.bg },
-  scroll: { padding: 20, paddingBottom: 48, gap: 14 },
-
-  header:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
-  title:    { fontSize: 24, fontWeight: '700', color: C.text, letterSpacing: -0.5 },
-  subtitle: { fontSize: 13, color: C.textSub, marginTop: 2 },
-
-  loader: { paddingTop: 64, alignItems: 'center' },
-
-  searchBox: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: C.card, borderRadius: 12,
-    borderWidth: 1, borderColor: C.border,
-    paddingHorizontal: 14, paddingVertical: 11,
-  },
-  searchInput: { flex: 1, fontSize: 14, color: C.text, padding: 0 },
-
-  pillRow:    { gap: 8, paddingBottom: 2 },
-  pill:       { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20, backgroundColor: C.card, borderWidth: 1, borderColor: C.border },
-  pillOn:     { backgroundColor: C.dark, borderColor: C.dark },
-  pillText:   { fontSize: 13, fontWeight: '500', color: C.textSub },
-  pillTextOn: { color: '#FFF' },
-
-  card: {
-    backgroundColor: C.card, borderRadius: 20, padding: 20,
-    borderWidth: 1, borderColor: C.border,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
-  },
-  divider: { height: 1, backgroundColor: '#F5F4F0', marginVertical: 2 },
-
-  empty:     { alignItems: 'center', paddingVertical: 32, gap: 10 },
-  emptyText: { fontSize: 14, color: C.textDim },
-
-  // Order card
-  oCard:     { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 12, gap: 10 },
-  oLeft:     { flex: 1, gap: 6 },
-  oTopLine:  { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  oCustomer: { fontSize: 14, fontWeight: '600', color: C.text, flexShrink: 1 },
-  oNumber:   { fontSize: 11, color: C.textDim, fontWeight: '600', letterSpacing: 0.3 },
-  oMeta:     { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 12 },
-  oRight:    { alignItems: 'flex-end', gap: 6, justifyContent: 'space-between' },
-  oTotal:    { fontSize: 15, fontWeight: '700', color: C.text },
-
-  metaItem: { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: '60%' },
-  metaText: { fontSize: 12, color: C.textSub, fontWeight: '500', flexShrink: 1 },
-
-  chip:     { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 5 },
-  chipText: { fontSize: 11, fontWeight: '600', letterSpacing: 0.1 },
-});
-
-// ─── Modal Styles ─────────────────────────────────────────────────────────────
-
-const m = StyleSheet.create({
-  safe:   { flex: 1, backgroundColor: C.bg },
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 20, paddingVertical: 16,
-    backgroundColor: C.card, borderBottomWidth: 1, borderBottomColor: C.border,
-  },
-  iconBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
-  title:   { fontSize: 16, fontWeight: '700', color: C.text },
-
-  scroll: { padding: 20, gap: 16, paddingBottom: 24 },
-
-  summary: {
-    backgroundColor: C.card, borderRadius: 18, padding: 18, gap: 16,
-    borderWidth: 1, borderColor: C.border,
-  },
-  summaryTop:      { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
-  summaryCustomer: { fontSize: 18, fontWeight: '700', color: C.text },
-  summaryNumber:   { fontSize: 12, color: C.textSub, marginTop: 2, fontWeight: '600' },
-  summaryRows:     { gap: 10 },
-
-  infoRow:   { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  infoLabel: { fontSize: 13, color: C.textSub, width: 64 },
-  infoValue: { fontSize: 13, color: C.text, fontWeight: '600', flex: 1 },
-
-  sectionLabel: { fontSize: 10, fontWeight: '700', color: C.textSub, letterSpacing: 1.5, marginTop: 4 },
-
-  itemsCard: {
-    backgroundColor: C.card, borderRadius: 18, paddingHorizontal: 18,
-    borderWidth: 1, borderColor: C.border,
-  },
-  itemsLoader:   { paddingVertical: 18, alignItems: 'center' },
-  itemRow:       { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14 },
-  itemRowBorder: { borderBottomWidth: 1, borderBottomColor: '#F5F4F0' },
-  itemQty:       { minWidth: 34, height: 28, borderRadius: 8, backgroundColor: C.bg, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
-  itemQtyText:   { fontSize: 13, fontWeight: '700', color: C.text },
-  itemInfo:      { flex: 1, gap: 2 },
-  itemName:      { fontSize: 14, fontWeight: '600', color: C.text },
-  itemSub:       { fontSize: 12, color: C.textSub },
-  itemToppings:  { fontSize: 12, color: C.textDim, marginTop: 1 },
-  itemTotal:     { fontSize: 14, fontWeight: '700', color: C.text },
-
-  totalsCard: {
-    backgroundColor: C.card, borderRadius: 18, padding: 18, gap: 12,
-    borderWidth: 1, borderColor: C.border,
-  },
-  totalRow:         { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  totalLabel:       { fontSize: 14, color: C.textSub },
-  totalLabelStrong: { fontSize: 15, color: C.text, fontWeight: '700' },
-  totalValue:       { fontSize: 14, color: C.text, fontWeight: '600' },
-  totalValueStrong: { fontSize: 18, color: C.text, fontWeight: '800', letterSpacing: -0.5 },
-  totalsDivider:    { height: 1, backgroundColor: C.border },
-
-  noteCard: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
-    backgroundColor: C.card, borderRadius: 14, padding: 16,
-    borderWidth: 1, borderColor: C.border,
-  },
-  noteText: { fontSize: 13, color: C.text, flex: 1, lineHeight: 19 },
-
-  footer: {
-    padding: 20, borderTopWidth: 1, borderTopColor: C.border, backgroundColor: C.card,
-  },
-  actionBtn:        { paddingVertical: 15, borderRadius: 12, alignItems: 'center' },
-  actionPrimary:    { backgroundColor: C.dark },
-  actionPrimaryText: { fontSize: 15, fontWeight: '700', color: '#FFF' },
-  actionDanger:     { backgroundColor: C.dangerBg, borderWidth: 1, borderColor: '#FECACA' },
-  actionDangerText: { fontSize: 15, fontWeight: '700', color: C.danger },
-  busy:             { opacity: 0.6 },
-});

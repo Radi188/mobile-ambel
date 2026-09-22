@@ -1,49 +1,36 @@
-import {
-  ScrollView, View, Text, StyleSheet, TouchableOpacity, TextInput,
-  ActivityIndicator, RefreshControl, Modal, Switch, Alert,
-  KeyboardAvoidingView, Platform,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useState, useEffect, useCallback } from 'react';
+import { useEffect, useState } from 'react';
+import { Alert, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import {
+  Avatar, Badge, Card, Chips, EmptyState, FormModal, IconButton, ListRow,
+  PagedList, RowCard, Screen, SearchField, SkeletonList, TextField, Toggle, TopBar,
+} from '../components/ui';
+import { usePaginatedList } from '../lib/usePaginatedList';
 import { useAuth } from '../context/AuthContext';
 import { usersService, UserPayload } from '../services/users.service';
-import { User, UserRole, Branch } from '../types/api.types';
+import { Branch, User, UserRole } from '../types/api.types';
+import { colors, plural, radius, space, text } from '../constants/theme';
 
-// ─── Tokens ────────────────────────────────────────────────────────────────────
-
-const C = {
-  bg:       '#F5F4F0',
-  card:     '#FFFFFF',
-  dark:     '#0D0D0D',
-  border:   '#EBEBEB',
-  text:     '#111111',
-  textSub:  '#888888',
-  textDim:  '#BBBBBB',
-  danger:   '#EF4444',
-  dangerBg: '#FEF2F2',
+const ROLE_LABEL: Record<UserRole, string> = {
+  super_admin: 'Super admin',
+  manager: 'Manager',
+  cashier: 'Cashier',
 };
 
-const ROLE_META: Record<UserRole, { label: string; color: string; bg: string }> = {
-  super_admin: { label: 'Super Admin', color: '#5B21B6', bg: '#EDE9FE' },
-  manager:     { label: 'Manager',     color: '#1D4ED8', bg: '#DBEAFE' },
-  cashier:     { label: 'Cashier',     color: '#374151', bg: '#F3F4F6' },
-};
+const PAGE_SIZE = 20;
 
 type RoleFilter = 'all' | UserRole;
 
 const ROLE_FILTERS: { key: RoleFilter; label: string }[] = [
-  { key: 'all',         label: 'All' },
+  { key: 'all', label: 'Everyone' },
   { key: 'super_admin', label: 'Admins' },
-  { key: 'manager',     label: 'Managers' },
-  { key: 'cashier',     label: 'Cashiers' },
+  { key: 'manager', label: 'Managers' },
+  { key: 'cashier', label: 'Cashiers' },
 ];
 
-// ─── Helpers ───────────────────────────────────────────────────────────────────
-
-function branchName(u: User): string {
-  const b = u.branch;
+function branchName(user: User): string {
+  const b = user.branch;
   return typeof b === 'object' && b ? b.name : '';
 }
 
@@ -57,53 +44,18 @@ function emptyForm() {
     email: '',
     password: '',
     role: 'cashier' as UserRole,
-    branch: '' as string,
+    branch: '',
     isActive: true,
   };
 }
 
-// ─── User Card ─────────────────────────────────────────────────────────────────
+// ─── Form ─────────────────────────────────────────────────────────────────────
 
-function UserCard({ user, onPress }: { user: User; onPress: () => void }) {
-  const rm = ROLE_META[user.role] ?? ROLE_META.cashier;
-  const branch = branchName(user);
-  return (
-    <TouchableOpacity style={s.uCard} onPress={onPress} activeOpacity={0.7}>
-      <View style={[s.avatar, !user.isActive && s.avatarOff]}>
-        <Text style={s.avatarText}>{(user.name?.[0] ?? '?').toUpperCase()}</Text>
-      </View>
-      <View style={s.uInfo}>
-        <View style={s.uTopLine}>
-          <Text style={s.uName} numberOfLines={1}>{user.name}</Text>
-          {!user.isActive && (
-            <View style={s.inactiveBadge}><Text style={s.inactiveText}>Inactive</Text></View>
-          )}
-        </View>
-        <Text style={s.uEmail} numberOfLines={1}>{user.email}</Text>
-        <View style={s.uMeta}>
-          <View style={[s.roleBadge, { backgroundColor: rm.bg }]}>
-            <Text style={[s.roleText, { color: rm.color }]}>{rm.label}</Text>
-          </View>
-          {!!branch && (
-            <View style={s.metaItem}>
-              <Ionicons name="business-outline" size={12} color={C.textSub} />
-              <Text style={s.metaText} numberOfLines={1}>{branch}</Text>
-            </View>
-          )}
-        </View>
-      </View>
-      <Ionicons name="chevron-forward" size={16} color={C.textDim} />
-    </TouchableOpacity>
-  );
-}
-
-// ─── User Form Modal ───────────────────────────────────────────────────────────
-
-function UserModal({
-  visible, editingUser, branches, isAdmin, managerBranchName, currentUserId, onClose, onSaved,
+function UserForm({
+  visible, editing, branches, isAdmin, managerBranchName, currentUserId, onClose, onSaved,
 }: {
   visible: boolean;
-  editingUser: User | null;
+  editing: User | null;
   branches: Branch[];
   isAdmin: boolean;
   managerBranchName: string;
@@ -111,44 +63,42 @@ function UserModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const isEdit = !!editingUser;
+  const isEdit = !!editing;
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState('');
 
-  const roleOptions: UserRole[] = isAdmin
-    ? ['cashier', 'manager', 'super_admin']
-    : ['cashier', 'manager'];
+  // Managers can create staff, but not other admins.
+  const roleOptions: UserRole[] = isAdmin ? ['cashier', 'manager', 'super_admin'] : ['cashier', 'manager'];
 
   useEffect(() => {
     if (!visible) return;
     setError('');
-    if (editingUser) {
+    if (editing) {
       setForm({
-        name: editingUser.name,
-        email: editingUser.email,
+        name: editing.name,
+        email: editing.email,
         password: '',
-        role: editingUser.role,
-        branch: typeof editingUser.branch === 'object' && editingUser.branch
-          ? editingUser.branch._id
-          : (editingUser.branch as string) ?? '',
-        isActive: editingUser.isActive,
+        role: editing.role,
+        branch: typeof editing.branch === 'object' && editing.branch
+          ? editing.branch._id
+          : (editing.branch as string) ?? '',
+        isActive: editing.isActive,
       });
     } else {
       setForm(emptyForm());
     }
-  }, [visible, editingUser]);
+  }, [visible, editing]);
 
-  const set = (key: keyof ReturnType<typeof emptyForm>, val: any) =>
-    setForm(prev => ({ ...prev, [key]: val }));
+  const set = (key: keyof ReturnType<typeof emptyForm>, value: any) =>
+    setForm(prev => ({ ...prev, [key]: value }));
 
   const validate = (): string | null => {
     if (!form.name.trim()) return 'Name is required.';
     if (!isValidEmail(form.email.trim())) return 'A valid email is required.';
     if (!isEdit && form.password.length < 6) return 'Password must be at least 6 characters.';
-    if (isEdit && form.password && form.password.length < 6)
-      return 'New password must be at least 6 characters.';
+    if (isEdit && form.password && form.password.length < 6) return 'New password must be at least 6 characters.';
     return null;
   };
 
@@ -159,7 +109,7 @@ function UserModal({
     setSaving(true);
     try {
       const wantsBranch = isAdmin && form.role !== 'super_admin' && form.branch;
-      if (isEdit && editingUser) {
+      if (isEdit && editing) {
         const dto: Partial<UserPayload> = {
           name: form.name.trim(),
           email: form.email.trim().toLowerCase(),
@@ -167,20 +117,17 @@ function UserModal({
           isActive: form.isActive,
           ...(wantsBranch ? { branch: form.branch } : {}),
         };
-        await usersService.update(editingUser._id, dto);
-        if (form.password) {
-          await usersService.changePassword(editingUser._id, form.password);
-        }
+        await usersService.update(editing._id, dto);
+        if (form.password) await usersService.changePassword(editing._id, form.password);
       } else {
-        const dto: UserPayload = {
+        await usersService.create({
           name: form.name.trim(),
           email: form.email.trim().toLowerCase(),
           password: form.password,
           role: form.role,
           isActive: form.isActive,
           ...(wantsBranch ? { branch: form.branch } : {}),
-        };
-        await usersService.create(dto);
+        });
       }
       onSaved();
       onClose();
@@ -192,8 +139,8 @@ function UserModal({
   };
 
   const handleDelete = () => {
-    if (!editingUser) return;
-    Alert.alert('Delete User', `Delete "${editingUser.name}"? This cannot be undone.`, [
+    if (!editing) return;
+    Alert.alert('Delete user', `Delete “${editing.name}”? This cannot be undone.`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
@@ -201,7 +148,7 @@ function UserModal({
         onPress: async () => {
           setDeleting(true);
           try {
-            await usersService.remove(editingUser._id);
+            await usersService.remove(editing._id);
             onSaved();
             onClose();
           } catch (e: any) {
@@ -214,447 +161,241 @@ function UserModal({
     ]);
   };
 
-  const canDelete = isAdmin && isEdit && editingUser?._id !== currentUserId;
+  const canDelete = isAdmin && isEdit && editing?._id !== currentUserId;
 
   return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-        <SafeAreaView style={m.safe}>
-          <View style={m.header}>
-            <TouchableOpacity onPress={onClose} style={m.iconBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Ionicons name="close" size={22} color={C.text} />
-            </TouchableOpacity>
-            <Text style={m.title}>{isEdit ? 'Edit User' : 'New User'}</Text>
-            {canDelete ? (
-              <TouchableOpacity onPress={handleDelete} style={m.iconBtn} disabled={deleting} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                {deleting ? <ActivityIndicator size="small" color={C.danger} />
-                          : <Ionicons name="trash-outline" size={20} color={C.danger} />}
-              </TouchableOpacity>
-            ) : <View style={{ width: 36 }} />}
-          </View>
-
-          <ScrollView contentContainerStyle={m.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-            <Field label="Full Name" value={form.name} onChangeText={v => set('name', v)} placeholder="e.g. Sok Dara" />
-            <Field
-              label="Email" value={form.email} onChangeText={v => set('email', v)}
-              placeholder="name@ambel.com" keyboardType="email-address"
-            />
-            <Field
-              label={isEdit ? 'New Password' : 'Password'}
-              value={form.password} onChangeText={v => set('password', v)}
-              placeholder={isEdit ? 'Leave blank to keep current' : 'At least 6 characters'}
-              secureTextEntry optional={isEdit}
-            />
-
-            {/* Role */}
-            <View style={m.section}>
-              <Text style={m.sectionLabel}>ROLE</Text>
-              <View style={m.roleRow}>
-                {roleOptions.map(r => (
-                  <TouchableOpacity
-                    key={r}
-                    style={[m.roleBtn, form.role === r && m.roleBtnActive]}
-                    onPress={() => set('role', r)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={[m.roleBtnText, form.role === r && m.roleBtnTextActive]}>
-                      {ROLE_META[r].label}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-
-            {/* Branch — picker for admins; auto-assigned & read-only for managers */}
-            {isAdmin ? (
-              form.role !== 'super_admin' && (
-                <View style={m.section}>
-                  <Text style={m.sectionLabel}>BRANCH</Text>
-                  <View style={m.pillWrap}>
-                    {branches.map(b => (
-                      <TouchableOpacity
-                        key={b._id}
-                        style={[m.pill, form.branch === b._id && m.pillActive]}
-                        onPress={() => set('branch', b._id)}
-                        activeOpacity={0.7}
-                      >
-                        <Text style={[m.pillText, form.branch === b._id && m.pillTextActive]}>{b.name}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                </View>
-              )
-            ) : (
-              <View style={m.section}>
-                <Text style={m.sectionLabel}>BRANCH</Text>
-                <View style={m.branchInfo}>
-                  <Ionicons name="business-outline" size={16} color={C.textSub} />
-                  <Text style={m.branchInfoText}>{managerBranchName || 'Your branch'}</Text>
-                  <View style={m.branchBadge}><Text style={m.branchBadgeText}>Auto-assigned</Text></View>
-                </View>
-              </View>
-            )}
-
-            {/* Active */}
-            <View style={m.toggleRow}>
-              <View>
-                <Text style={m.toggleLabel}>Active</Text>
-                <Text style={m.toggleSub}>Inactive users cannot sign in</Text>
-              </View>
-              <Switch
-                value={form.isActive}
-                onValueChange={v => set('isActive', v)}
-                trackColor={{ false: C.border, true: C.dark }}
-                thumbColor={C.card}
-              />
-            </View>
-
-            {error ? (
-              <View style={m.errorWrap}>
-                <Ionicons name="alert-circle-outline" size={14} color={C.danger} />
-                <Text style={m.errorText}>{error}</Text>
-              </View>
-            ) : null}
-          </ScrollView>
-
-          <View style={m.footer}>
-            <TouchableOpacity style={m.cancelBtn} onPress={onClose} activeOpacity={0.7}>
-              <Text style={m.cancelText}>Cancel</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[m.saveBtn, saving && m.busy]} onPress={handleSave} disabled={saving} activeOpacity={0.85}>
-              {saving ? <ActivityIndicator color="#FFF" size="small" />
-                      : <Text style={m.saveText}>{isEdit ? 'Save Changes' : 'Create User'}</Text>}
-            </TouchableOpacity>
-          </View>
-        </SafeAreaView>
-      </KeyboardAvoidingView>
-    </Modal>
-  );
-}
-
-function Field({
-  label, value, onChangeText, placeholder, keyboardType, secureTextEntry, optional,
-}: {
-  label: string; value: string; onChangeText: (v: string) => void;
-  placeholder?: string; keyboardType?: 'default' | 'email-address';
-  secureTextEntry?: boolean; optional?: boolean;
-}) {
-  return (
-    <View style={m.fieldWrap}>
-      <Text style={m.fieldLabel}>
-        {label.toUpperCase()}{optional && <Text style={m.fieldOpt}> · optional</Text>}
-      </Text>
-      <TextInput
-        style={m.fieldInput}
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        placeholderTextColor={C.textDim}
-        keyboardType={keyboardType ?? 'default'}
-        secureTextEntry={secureTextEntry}
-        autoCapitalize={keyboardType === 'email-address' ? 'none' : 'words'}
-        autoCorrect={false}
-        selectionColor={C.dark}
+    <FormModal
+      visible={visible}
+      title={isEdit ? 'Edit staff' : 'New staff'}
+      onClose={onClose}
+      onSubmit={handleSave}
+      submitLabel={isEdit ? 'Save changes' : 'Create user'}
+      submitting={saving}
+      onDelete={canDelete ? handleDelete : undefined}
+      deleting={deleting}
+      error={error}
+    >
+      <TextField label="Full name" value={form.name} onChangeText={v => set('name', v)} placeholder="e.g. Sok Dara" autoCapitalize="words" />
+      <TextField
+        label="Email"
+        value={form.email}
+        onChangeText={v => set('email', v)}
+        placeholder="name@bongpos.com"
+        keyboardType="email-address"
+        icon="mail-outline"
       />
-    </View>
+      <TextField
+        label={isEdit ? 'New password' : 'Password'}
+        value={form.password}
+        onChangeText={v => set('password', v)}
+        placeholder={isEdit ? 'Leave blank to keep current' : 'At least 6 characters'}
+        secure
+        optional={isEdit}
+        icon="lock-closed-outline"
+      />
+
+      <View style={f.section}>
+        <Text style={text.overline}>Role</Text>
+        <Chips
+          options={roleOptions.map(r => ({ key: r, label: ROLE_LABEL[r] }))}
+          value={form.role}
+          onChange={key => set('role', key)}
+          wrap
+        />
+      </View>
+
+      <View style={f.section}>
+        <Text style={text.overline}>Branch</Text>
+        {isAdmin ? (
+          form.role === 'super_admin' ? (
+            <Text style={text.caption}>Super admins can see every branch.</Text>
+          ) : (
+            <Chips
+              options={branches.map(b => ({ key: b._id, label: b.name }))}
+              value={form.branch}
+              onChange={key => set('branch', key)}
+              wrap
+            />
+          )
+        ) : (
+          <View style={f.readonly}>
+            <Ionicons name="business-outline" size={16} color={colors.textSecondary} />
+            <Text style={[text.small, f.readonlyText]}>{managerBranchName || 'Your branch'}</Text>
+            <Badge label="Auto-assigned" tone="subtle" />
+          </View>
+        )}
+      </View>
+
+      <Card>
+        <Toggle
+          label="Active"
+          sub="Inactive users cannot sign in"
+          value={form.isActive}
+          onChange={v => set('isActive', v)}
+        />
+      </Card>
+    </FormModal>
   );
 }
 
-// ─── Screen ────────────────────────────────────────────────────────────────────
+const f = StyleSheet.create({
+  section: { gap: space.md },
+  readonly: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    padding: space.md,
+  },
+  readonlyText: { flex: 1, color: colors.text, fontWeight: '600' },
+});
+
+// ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function UsersScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const isAdmin = user?.role === 'super_admin';
 
-  const [loading, setLoading]     = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [users, setUsers]         = useState<User[]>([]);
-  const [branches, setBranches]   = useState<Branch[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
   const [roleFilter, setRoleFilter] = useState<RoleFilter>('all');
-  const [branchFilter, setBranchFilter] = useState<string | undefined>(undefined);
-  const [search, setSearch]       = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editing, setEditing]     = useState<User | null>(null);
+  const [branchFilter, setBranchFilter] = useState<string>('all');
+  const [search, setSearch] = useState('');
+  const [debounced, setDebounced] = useState('');
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState<User | null>(null);
 
-  // Debounce the search box so we don't hit the API on every keystroke.
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search.trim()), 350);
-    return () => clearTimeout(t);
+    const id = setTimeout(() => setDebounced(search.trim()), 350);
+    return () => clearTimeout(id);
   }, [search]);
 
-  const load = useCallback(async () => {
-    try {
-      const list = await usersService.getUsers(
-        roleFilter === 'all' ? undefined : roleFilter,
-        branchFilter,
-        debouncedSearch || undefined,
-      );
-      setUsers(list ?? []);
-    } catch {
-      setUsers([]);
-    }
-  }, [roleFilter, branchFilter, debouncedSearch]);
+  const staff = usePaginatedList<User>(
+    page => usersService.getUsers({
+      page,
+      limit: PAGE_SIZE,
+      role: roleFilter === 'all' ? undefined : roleFilter,
+      branch: branchFilter === 'all' ? undefined : branchFilter,
+      search: debounced || undefined,
+    }),
+    [roleFilter, branchFilter, debounced],
+  );
 
   useEffect(() => {
     if (!isAdmin) return;
-    usersService.getBranches().then(b => setBranches(b ?? [])).catch(() => {});
+    usersService.getBranches().then(list => setBranches(list ?? [])).catch(() => {});
   }, [isAdmin]);
 
-  useEffect(() => {
-    setLoading(true);
-    load().finally(() => setLoading(false));
-  }, [load]);
+  // Managers are locked to one branch — derive its name from the scoped list.
+  const managerBranchName = !isAdmin ? staff.items.map(branchName).find(Boolean) ?? '' : '';
+  const roleFilters = isAdmin ? ROLE_FILTERS : ROLE_FILTERS.filter(r => r.key !== 'super_admin');
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await load();
-    setRefreshing(false);
-  }, [load]);
-
-  const openCreate = () => { setEditing(null); setModalOpen(true); };
-  const openEdit = (u: User) => { setEditing(u); setModalOpen(true); };
-
-  // Managers are locked to one branch — derive its name from the (branch-scoped) list.
-  const managerBranchName = !isAdmin ? users.map(branchName).find(Boolean) ?? '' : '';
-
-  // Managers don't manage admins, so only offer the roles they can assign.
-  const roleFilters = isAdmin ? ROLE_FILTERS : ROLE_FILTERS.filter(f => f.key !== 'super_admin');
+  const openCreate = () => { setEditing(null); setFormOpen(true); };
 
   return (
-    <SafeAreaView style={s.safe} edges={['top']}>
-      <View style={s.topBar}>
-        <TouchableOpacity onPress={() => router.back()} style={s.backBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Ionicons name="chevron-back" size={24} color={C.text} />
-        </TouchableOpacity>
-        <Text style={s.topTitle}>Users</Text>
-        <TouchableOpacity onPress={openCreate} style={s.addBtn} activeOpacity={0.85}>
-          <Ionicons name="add" size={20} color="#FFF" />
-        </TouchableOpacity>
-      </View>
-
-      <ScrollView
-        contentContainerStyle={s.scroll}
-        showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.textDim} />}
-      >
-        <Text style={s.subtitle}>
-          {users.length} user{users.length === 1 ? '' : 's'}{managerBranchName ? ` · ${managerBranchName}` : ''}
-        </Text>
-
-        {/* Search */}
-        <View style={s.searchBox}>
-          <Ionicons name="search" size={17} color={C.textSub} />
-          <TextInput
-            style={s.searchInput}
-            value={search}
-            onChangeText={setSearch}
-            placeholder="Search by name or email"
-            placeholderTextColor={C.textDim}
-            autoCapitalize="none"
-            autoCorrect={false}
-            returnKeyType="search"
-            selectionColor={C.dark}
-          />
-          {search.length > 0 && (
-            <TouchableOpacity onPress={() => setSearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Ionicons name="close-circle" size={18} color={C.textDim} />
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {/* Role filter */}
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.pillRow}>
-          {roleFilters.map(f => (
-            <TouchableOpacity
-              key={f.key}
-              style={[s.filterPill, roleFilter === f.key && s.filterPillOn]}
-              onPress={() => setRoleFilter(f.key)}
-              activeOpacity={0.7}
-            >
-              <Text style={[s.filterPillText, roleFilter === f.key && s.filterPillTextOn]}>{f.label}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-
-        {/* Branch filter — super admin only */}
-        {isAdmin && branches.length > 0 && (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.pillRow}>
-            <TouchableOpacity
-              style={[s.filterPill, !branchFilter && s.filterPillOn]}
-              onPress={() => setBranchFilter(undefined)}
-              activeOpacity={0.7}
-            >
-              <Text style={[s.filterPillText, !branchFilter && s.filterPillTextOn]}>All Branches</Text>
-            </TouchableOpacity>
-            {branches.map(b => (
-              <TouchableOpacity
-                key={b._id}
-                style={[s.filterPill, branchFilter === b._id && s.filterPillOn]}
-                onPress={() => setBranchFilter(b._id)}
-                activeOpacity={0.7}
-              >
-                <Text style={[s.filterPillText, branchFilter === b._id && s.filterPillTextOn]}>{b.name}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        )}
-
-        {loading ? (
-          <View style={s.loader}><ActivityIndicator size="large" color={C.textDim} /></View>
-        ) : users.length === 0 ? (
-          <View style={s.card}>
-            <View style={s.empty}>
-              <Ionicons name="people-outline" size={36} color={C.textDim} />
-              <Text style={s.emptyText}>
-                {debouncedSearch ? `No users match “${debouncedSearch}”` : 'No users found'}
+    <Screen
+      scroll={false}
+      padded={false}
+      gap={0}
+      topBar={
+        <TopBar
+          title="Staff"
+          onBack={() => router.back()}
+          right={<IconButton icon="add" variant="filled" size={38} onPress={openCreate} label="Add user" />}
+        />
+      }
+    >
+      <PagedList
+        tabBar={false}
+        data={staff.items}
+        keyExtractor={item => item._id}
+        refreshing={staff.refreshing}
+        onRefresh={staff.refresh}
+        onEndReached={staff.loadMore}
+        loadingMore={staff.loadingMore}
+        hasMore={staff.hasMore}
+        total={staff.total}
+        noun="accounts"
+        header={
+          <>
+            <View style={s.summary}>
+              <Text style={text.caption}>
+                {plural(staff.total, 'account')}{managerBranchName ? ` · ${managerBranchName}` : ''}
               </Text>
+              <Text style={text.micro}>{staff.items.filter(u => !u.isActive).length} inactive shown</Text>
             </View>
-          </View>
-        ) : (
-          <View style={s.card}>
-            {users.map((u, i) => (
-              <View key={u._id}>
-                <UserCard user={u} onPress={() => openEdit(u)} />
-                {i < users.length - 1 && <View style={s.divider} />}
-              </View>
-            ))}
-          </View>
-        )}
-      </ScrollView>
 
-      <UserModal
-        visible={modalOpen}
-        editingUser={editing}
+            <SearchField value={search} onChangeText={setSearch} placeholder="Search by name or email" />
+            <Chips options={roleFilters} value={roleFilter} onChange={setRoleFilter} />
+
+            {isAdmin && branches.length > 0 && (
+              <Chips
+                options={[{ key: 'all', label: 'All branches' }, ...branches.map(b => ({ key: b._id, label: b.name }))]}
+                value={branchFilter}
+                onChange={setBranchFilter}
+              />
+            )}
+          </>
+        }
+        empty={
+          staff.loading ? (
+            <SkeletonList rows={6} />
+          ) : (
+            <Card padded={false}>
+              <EmptyState
+                icon="people-outline"
+                title={staff.error ? 'Couldn\u2019t load staff' : debounced ? 'No matching staff' : 'No staff yet'}
+                message={
+                  staff.error
+                    ? staff.error
+                    : debounced
+                      ? `Nothing matches \u201C${debounced}\u201D.`
+                      : 'Create an account for your team.'
+                }
+                action={
+                  staff.error
+                    ? { label: 'Try again', onPress: staff.reload }
+                    : { label: 'Add user', onPress: openCreate }
+                }
+              />
+            </Card>
+          )
+        }
+        renderItem={({ item, index }) => (
+          <RowCard first={index === 0} last={index === staff.items.length - 1}>
+            <ListRow
+              title={item.name}
+              subtitle={item.email}
+              leading={<Avatar name={item.name} size={42} tone={item.isActive ? 'solid' : 'sunken'} muted={!item.isActive} />}
+              badge={!item.isActive ? <Badge label="Inactive" tone="outline" /> : undefined}
+              meta={[
+                { icon: 'shield-outline', text: ROLE_LABEL[item.role] ?? item.role },
+                ...(branchName(item) ? [{ icon: 'business-outline' as const, text: branchName(item) }] : []),
+              ]}
+              onPress={() => { setEditing(item); setFormOpen(true); }}
+              chevron
+            />
+          </RowCard>
+        )}
+      />
+
+      <UserForm
+        visible={formOpen}
+        editing={editing}
         branches={branches}
         isAdmin={isAdmin}
         managerBranchName={managerBranchName}
         currentUserId={user?.userId}
-        onClose={() => setModalOpen(false)}
-        onSaved={load}
+        onClose={() => setFormOpen(false)}
+        onSaved={staff.reload}
       />
-    </SafeAreaView>
+    </Screen>
   );
 }
 
-// ─── Styles ────────────────────────────────────────────────────────────────────
-
 const s = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: C.bg },
-
-  topBar: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingVertical: 12, gap: 8,
-  },
-  backBtn:  { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
-  topTitle: { flex: 1, fontSize: 18, fontWeight: '700', color: C.text },
-  addBtn:   { width: 36, height: 36, borderRadius: 10, backgroundColor: C.dark, alignItems: 'center', justifyContent: 'center' },
-
-  scroll:   { paddingHorizontal: 20, paddingBottom: 40, gap: 14 },
-  subtitle: { fontSize: 13, color: C.textSub },
-
-  loader: { paddingTop: 64, alignItems: 'center' },
-
-  searchBox: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: C.card, borderRadius: 12,
-    borderWidth: 1, borderColor: C.border,
-    paddingHorizontal: 14, paddingVertical: 11,
-  },
-  searchInput: { flex: 1, fontSize: 14, color: C.text, padding: 0 },
-
-  pillRow:          { gap: 8, paddingBottom: 2 },
-  filterPill:       { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20, backgroundColor: C.card, borderWidth: 1, borderColor: C.border },
-  filterPillOn:     { backgroundColor: C.dark, borderColor: C.dark },
-  filterPillText:   { fontSize: 13, fontWeight: '500', color: C.textSub },
-  filterPillTextOn: { color: '#FFF' },
-
-  card: {
-    backgroundColor: C.card, borderRadius: 20, padding: 16,
-    borderWidth: 1, borderColor: C.border,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
-  },
-  divider: { height: 1, backgroundColor: '#F5F4F0', marginVertical: 2 },
-
-  empty:     { alignItems: 'center', paddingVertical: 32, gap: 10 },
-  emptyText: { fontSize: 14, color: C.textDim },
-
-  uCard:  { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: 12 },
-  avatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: C.dark, alignItems: 'center', justifyContent: 'center' },
-  avatarOff: { backgroundColor: C.textDim },
-  avatarText: { color: '#FFF', fontSize: 17, fontWeight: '700' },
-  uInfo:    { flex: 1, gap: 3 },
-  uTopLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  uName:    { fontSize: 14, fontWeight: '600', color: C.text, flexShrink: 1 },
-  uEmail:   { fontSize: 12, color: C.textSub },
-  uMeta:    { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 2 },
-  roleBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 5 },
-  roleText:  { fontSize: 11, fontWeight: '600', letterSpacing: 0.1 },
-  metaItem:  { flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 1 },
-  metaText:  { fontSize: 12, color: C.textSub, fontWeight: '500', flexShrink: 1 },
-  inactiveBadge: { backgroundColor: C.dangerBg, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 5 },
-  inactiveText:  { fontSize: 10, fontWeight: '700', color: C.danger },
-});
-
-const m = StyleSheet.create({
-  safe:   { flex: 1, backgroundColor: C.card },
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 20, paddingVertical: 16,
-    borderBottomWidth: 1, borderBottomColor: C.border,
-  },
-  iconBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
-  title:   { fontSize: 16, fontWeight: '700', color: C.text },
-
-  scroll: { padding: 20, gap: 22, paddingBottom: 8 },
-
-  fieldWrap:  { gap: 8 },
-  fieldLabel: { fontSize: 10, fontWeight: '700', color: C.textSub, letterSpacing: 1.5 },
-  fieldOpt:   { fontWeight: '400', color: C.textDim },
-  fieldInput: {
-    backgroundColor: C.bg, borderRadius: 10,
-    paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: C.text,
-  },
-
-  section:      { gap: 10 },
-  sectionLabel: { fontSize: 10, fontWeight: '700', color: C.textSub, letterSpacing: 1.5 },
-
-  roleRow: { flexDirection: 'row', gap: 8 },
-  roleBtn: { flex: 1, paddingVertical: 11, borderRadius: 10, borderWidth: 1.5, borderColor: C.border, alignItems: 'center' },
-  roleBtnActive: { borderColor: C.dark, backgroundColor: C.dark },
-  roleBtnText: { fontSize: 13, fontWeight: '600', color: C.textSub },
-  roleBtnTextActive: { color: '#FFF' },
-
-  pillWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  pill:     { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, borderWidth: 1.5, borderColor: C.border },
-  pillActive:     { borderColor: C.dark, backgroundColor: C.dark },
-  pillText:       { fontSize: 13, fontWeight: '500', color: C.textSub },
-  pillTextActive: { color: '#FFF' },
-
-  branchInfo: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: C.bg, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 13,
-  },
-  branchInfoText: { flex: 1, fontSize: 14, fontWeight: '600', color: C.text },
-  branchBadge:    { backgroundColor: '#F0FDF4', borderRadius: 5, paddingHorizontal: 8, paddingVertical: 3 },
-  branchBadgeText: { fontSize: 11, fontWeight: '600', color: '#16A34A' },
-
-  toggleRow:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  toggleLabel: { fontSize: 15, fontWeight: '600', color: C.text },
-  toggleSub:   { fontSize: 12, color: C.textSub, marginTop: 2 },
-
-  errorWrap: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: C.dangerBg, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12,
-  },
-  errorText: { fontSize: 13, color: C.danger, fontWeight: '500', flex: 1 },
-
-  footer: { flexDirection: 'row', gap: 10, padding: 20, borderTopWidth: 1, borderTopColor: C.border },
-  cancelBtn: { flex: 1, paddingVertical: 14, borderRadius: 12, borderWidth: 1.5, borderColor: C.border, alignItems: 'center' },
-  cancelText: { fontSize: 14, fontWeight: '600', color: C.textSub },
-  saveBtn: { flex: 2, paddingVertical: 14, borderRadius: 12, backgroundColor: C.dark, alignItems: 'center' },
-  busy: { opacity: 0.65 },
-  saveText: { fontSize: 14, fontWeight: '700', color: '#FFF' },
+  summary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
 });

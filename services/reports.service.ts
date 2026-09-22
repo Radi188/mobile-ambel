@@ -1,18 +1,39 @@
-import api from '../lib/api';
-import { SalesReport, ProductReport, CashierReport, BranchReport } from '../types/api.types';
+import { Shift } from '../types/api.types';
+import { db, delay, fail, scopedOrders, scopedPayments, scopedShifts } from './mock/store';
+import {
+  branchReport, cashierReport, filterOrders, filterPayments,
+  orderSummaryReport, productReport, salesReport, shiftSummary,
+} from './mock/reports';
 
 export type ReportFilter = { dateFrom?: string; dateTo?: string };
 
+/**
+ * Reports over the mock dataset. Everything except the cross-branch report is
+ * scoped to the branch the app is currently viewing, matching how the old
+ * x-branch-id header behaved.
+ */
 export const reportsService = {
-  getSales: (filter?: ReportFilter) =>
-    api.get('/reports/sales', { params: filter }) as unknown as Promise<SalesReport>,
+  getSales: async (filter: ReportFilter = {}) =>
+    delay(salesReport(filterPayments(await scopedPayments(), filter))),
 
-  getProducts: (filter?: ReportFilter) =>
-    api.get('/reports/products', { params: filter }) as unknown as Promise<ProductReport>,
+  getOrderSummary: async (filter: ReportFilter = {}) =>
+    delay(orderSummaryReport(filterOrders(await scopedOrders(), filter))),
 
-  getCashiers: (filter?: ReportFilter) =>
-    api.get('/reports/cashiers', { params: filter }) as unknown as Promise<CashierReport>,
+  getProducts: async (filter: ReportFilter = {}) =>
+    delay(productReport(filterOrders(await scopedOrders(), filter))),
 
-  getBranches: (filter?: ReportFilter) =>
-    api.get('/reports/branches', { params: filter }) as unknown as Promise<BranchReport>,
+  getCashiers: async (filter: ReportFilter = {}) =>
+    delay(cashierReport(filterOrders(await scopedOrders(), filter))),
+
+  // Deliberately unscoped: this one exists to compare branches against each other.
+  getBranches: (filter: ReportFilter = {}) =>
+    delay(branchReport(filterOrders(db.orders, filter), filterPayments(db.payments, filter))),
+
+  getShifts: () => scopedShifts().then(list => delay(list)),
+
+  getShiftSummary: (id: string) => {
+    const shift: Shift | undefined = db.shifts.find(s => s._id === id);
+    if (!shift) fail('Shift not found.');
+    return delay(shiftSummary(shift), 90);
+  },
 };

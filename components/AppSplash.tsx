@@ -1,57 +1,40 @@
 import { useEffect, useRef } from 'react';
-import { View, Image, Text, StyleSheet, Animated } from 'react-native';
+import { Animated, Image, StyleSheet } from 'react-native';
+import { colors, radius, shadow, space, text } from '../constants/theme';
 
 type Props = { onDone: () => void };
 
+/** Cover shown over the app on cold start until the first frame is worth seeing. */
 export default function AppSplash({ onDone }: Props) {
-  const cardScale = useRef(new Animated.Value(0.88)).current;
-  const cardOp    = useRef(new Animated.Value(0)).current;
-  const tagOp     = useRef(new Animated.Value(0)).current;
-  const lineScaleX = useRef(new Animated.Value(0)).current;
-  const screenOp  = useRef(new Animated.Value(1)).current;
+  const markScale = useRef(new Animated.Value(0.9)).current;
+  const markOpacity = useRef(new Animated.Value(0)).current;
+  const ruleScale = useRef(new Animated.Value(0)).current;
+  const wordOpacity = useRef(new Animated.Value(0)).current;
+  const screenOpacity = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     Animated.sequence([
-      // Card entrance
       Animated.parallel([
-        Animated.timing(cardOp, {
-          toValue: 1, duration: 550, useNativeDriver: true,
-        }),
-        Animated.spring(cardScale, {
-          toValue: 1, tension: 55, friction: 9, useNativeDriver: true,
-        }),
+        Animated.timing(markOpacity, { toValue: 1, duration: 420, useNativeDriver: true }),
+        Animated.spring(markScale, { toValue: 1, tension: 60, friction: 9, useNativeDriver: true }),
       ]),
-      // Decorative line grows
-      Animated.timing(lineScaleX, {
-        toValue: 1, duration: 380, useNativeDriver: true,
-      }),
-      // Tagline fades in
-      Animated.timing(tagOp, {
-        toValue: 1, duration: 400, useNativeDriver: true,
-      }),
-      // Hold
-      Animated.delay(900),
-      // Fade out entire splash
-      Animated.timing(screenOp, {
-        toValue: 0, duration: 480, useNativeDriver: true,
-      }),
+      Animated.timing(ruleScale, { toValue: 1, duration: 320, useNativeDriver: true }),
+      Animated.timing(wordOpacity, { toValue: 1, duration: 320, useNativeDriver: true }),
+      Animated.delay(700),
+      Animated.timing(screenOpacity, { toValue: 0, duration: 420, useNativeDriver: true }),
     ]).start(() => onDone());
   }, []);
 
   return (
-    <Animated.View style={[s.root, { opacity: screenOp }]}>
-      <Animated.View style={[s.card, { opacity: cardOp, transform: [{ scale: cardScale }] }]}>
-        <Image
-          source={require('../assets/logo.png')}
-          style={s.logo}
-          resizeMode="contain"
-        />
+    <Animated.View style={[s.root, { opacity: screenOpacity }]}>
+      <Animated.View style={[s.mark, { opacity: markOpacity, transform: [{ scale: markScale }] }]}>
+        <Image source={require('../assets/logo-mark.png')} style={s.logo} resizeMode="contain" />
       </Animated.View>
 
-      <Animated.View style={[s.divider, { transform: [{ scaleX: lineScaleX }] }]} />
+      <Animated.View style={[s.rule, { transform: [{ scaleX: ruleScale }] }]} />
 
-      <Animated.Text style={[s.tag, { opacity: tagOp }]}>
-        POS SYSTEM
+      <Animated.Text style={[text.overline, s.word, { opacity: wordOpacity }]}>
+        BongPOS Owner
       </Animated.Text>
     </Animated.View>
   );
@@ -60,41 +43,25 @@ export default function AppSplash({ onDone }: Props) {
 const s = StyleSheet.create({
   root: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#0D0D0D',
+    backgroundColor: colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: space.xl,
     zIndex: 9999,
-    gap: 20,
   },
-  card: {
-    width: 188,
-    height: 188,
-    borderRadius: 20,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20,
-    shadowColor: '#C4A882',
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.18,
-    shadowRadius: 32,
-    elevation: 12,
-  },
-  logo: {
+  mark: {
     width: 148,
     height: 148,
+    borderRadius: radius.xxl,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: space.xl,
+    ...shadow.md,
   },
-  divider: {
-    width: 32,
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: '#C4A882',
-    opacity: 0.6,
-  },
-  tag: {
-    fontSize: 10,
-    letterSpacing: 5,
-    color: '#5A5A5A',
-    fontWeight: '500',
-    marginLeft: 5,
-  },
+  logo: { width: 104, height: 104 },
+  rule: { width: 28, height: 1.5, backgroundColor: colors.accent },
+  word: { color: colors.textSecondary },
 });
