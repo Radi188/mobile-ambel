@@ -1,4 +1,4 @@
-import { Branch, Category, PageQuery, Paginated, Product, ProductReport } from '../types/api.types';
+import { Category, PageQuery, Paginated, Product, ProductReport } from '../types/api.types';
 import {
   activeBranchId, branchIdOf, db, delay, fail, nextId, nowIso, paginate, scopedOrders,
 } from './mock/store';
@@ -24,17 +24,10 @@ export type ProductPayload = {
   sizes: ProductSizePayload[];
   isAvailable?: boolean;
   imageUrl?: string;
-  branches?: string[];
 };
 
 function categoryId(product: Product): string {
   return typeof product.category === 'object' ? product.category._id : String(product.category ?? '');
-}
-
-function resolveBranches(ids?: string[], fallback?: string | null): Branch[] {
-  if (ids?.length) return db.branches.filter(branch => ids.includes(branch._id));
-  if (fallback) return db.branches.filter(branch => branch._id === fallback);
-  return [...db.branches];
 }
 
 export const productsService = {
@@ -50,7 +43,7 @@ export const productsService = {
     const needle = search?.trim().toLowerCase();
 
     const list = db.products.filter(product => {
-      if (branch && !(product.branches ?? []).some(b => branchIdOf(b) === branch)) return false;
+      if (branch && product.branches?.length && !product.branches.some(b => branchIdOf(b) === branch)) return false;
       if (category && categoryId(product) !== category) return false;
       if (type && product.type !== type) return false;
       if (needle && !product.name.toLowerCase().includes(needle)) return false;
@@ -70,7 +63,7 @@ export const productsService = {
     const branch = await activeBranchId();
     const present = new Set(
       db.products
-        .filter(product => !branch || (product.branches ?? []).some(b => branchIdOf(b) === branch))
+        .filter(product => !branch || !product.branches?.length || product.branches.some(b => branchIdOf(b) === branch))
         .map(categoryId),
     );
     return delay(db.categories.filter(category => present.has(category._id)));
@@ -79,7 +72,7 @@ export const productsService = {
   getProductReport: async (dateFrom?: string, dateTo?: string) =>
     delay(productReport(filterOrders(await scopedOrders(), { dateFrom, dateTo })) as ProductReport),
 
-  create: async (dto: ProductPayload) => {
+  create: (dto: ProductPayload) => {
     const category = db.categories.find(c => c._id === dto.category);
     if (!category) fail('Pick a category first.');
 
@@ -96,7 +89,6 @@ export const productsService = {
       })),
       imageUrl: dto.imageUrl,
       isAvailable: dto.isAvailable ?? true,
-      branches: resolveBranches(dto.branches, await activeBranchId()),
       createdAt: nowIso(),
       updatedAt: nowIso(),
     };
@@ -124,7 +116,6 @@ export const productsService = {
         isAvailable: size.isAvailable ?? true,
       }));
     }
-    if (dto.branches) product.branches = resolveBranches(dto.branches);
     product.updatedAt = nowIso();
 
     return delay(product);

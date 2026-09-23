@@ -67,6 +67,36 @@ export const ordersService = {
 
   getBranches: () => delay([...db.branches] as Branch[]),
 
+  /**
+   * POST /orders/:id/cancel  →  the updated Order
+   *
+   * The dedicated cancel endpoint: the server owns the side effects (voiding
+   * the payment, releasing the order number), so the app posts the intent
+   * rather than patching a status field. An optional reason goes in the body.
+   *
+   * Idempotent on purpose — cancelling an already-cancelled order returns it
+   * unchanged instead of erroring, so a double tap or a retried request can't
+   * surface a scary message for something that already succeeded.
+   */
+  cancel: (id: string, reason?: string) => {
+    const order = db.orders.find(o => o._id === id);
+    if (!order) fail('Order not found.');
+    if (order.status === 'cancelled') return delay(order, 120);
+
+    order.status = 'cancelled';
+    order.updatedAt = nowIso();
+    if (reason?.trim()) {
+      order.note = order.note ? `${order.note}\n${reason.trim()}` : reason.trim();
+    }
+    syncPayment(order, 'cancelled');
+    return delay(order);
+  },
+
+  /**
+   * Restoring a cancelled order. There's no endpoint for this on the new API
+   * yet — point it at whatever the server ends up exposing (a status PATCH, or
+   * a matching POST /orders/:id/restore) and the screen needs no change.
+   */
   updateStatus: (id: string, status: OrderStatus) => {
     const order = db.orders.find(o => o._id === id);
     if (!order) fail('Order not found.');

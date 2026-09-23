@@ -3,7 +3,7 @@ import { Alert, Image, StyleSheet, Text, View } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  Badge, Button, Card, Chips, EmptyState, FormModal, IconButton, MultiChips,
+  Badge, Button, Card, Chips, EmptyState, FormModal, IconButton,
   PagedList, Press, Screen, ScreenHeader, SearchField, SkeletonList, TextField, Toggle,
 } from '../../components/ui';
 import { usePaginatedList } from '../../lib/usePaginatedList';
@@ -54,7 +54,6 @@ function freshForm() {
     category: '',
     isAvailable: true,
     sizes: [{ ...EMPTY_SIZE }] as FormSize[],
-    branches: [] as string[],
   };
 }
 
@@ -191,19 +190,16 @@ const sz = StyleSheet.create({
 // ─── Product form ─────────────────────────────────────────────────────────────
 
 function ProductForm({
-  visible, onClose, onSaved, editing, categories, branches, isAdmin,
+  visible, onClose, onSaved, editing, categories, isAdmin,
 }: {
   visible: boolean;
   onClose: () => void;
   onSaved: () => void;
   editing: Product | null;
   categories: Category[];
-  branches: Branch[];
   isAdmin: boolean;
 }) {
-  const { user } = useAuth();
   const isEdit = !!editing;
-  const managerBranch = !isAdmin ? branches.find(b => b._id === user?.branchId) ?? null : null;
 
   const [form, setForm] = useState(freshForm());
   const [saving, setSaving] = useState(false);
@@ -227,7 +223,6 @@ function ProductForm({
         category: typeof editing.category === 'object' ? editing.category._id : editing.category,
         isAvailable: editing.isAvailable,
         sizes: editing.sizes.map(s => ({ name: s.name, price: String(s.price), isAvailable: s.isAvailable })),
-        branches: (editing.branches ?? []).map(b => (typeof b === 'object' ? b._id : b)),
       });
     } else {
       setForm(freshForm());
@@ -266,7 +261,6 @@ function ProductForm({
   const validate = (): string | null => {
     if (!form.name.trim()) return 'Product name is required.';
     if (!form.category) return 'Please select a category.';
-    if (isAdmin && form.branches.length === 0) return 'Select at least one branch.';
     if (form.sizes.length === 0) return 'Add at least one size.';
     for (const size of form.sizes) {
       if (!size.name.trim()) return 'Each size needs a name.';
@@ -292,7 +286,6 @@ function ProductForm({
           price: parseFloat(size.price) || 0,
           isAvailable: size.isAvailable,
         })),
-        ...(isAdmin && form.branches.length > 0 ? { branches: form.branches } : {}),
       };
       const saved = isEdit && editing
         ? await productsService.update(editing._id, dto)
@@ -402,27 +395,6 @@ function ProductForm({
         )}
       </View>
 
-      <View style={f.section}>
-        <Text style={text.overline}>Branches</Text>
-        {isAdmin ? (
-          <MultiChips
-            options={branches.map(b => ({ key: b._id, label: b.name }))}
-            values={form.branches}
-            onToggle={id =>
-              set('branches', form.branches.includes(id)
-                ? form.branches.filter(b => b !== id)
-                : [...form.branches, id])
-            }
-          />
-        ) : (
-          <View style={f.readonly}>
-            <Ionicons name="business-outline" size={16} color={colors.textSecondary} />
-            <Text style={[text.small, f.readonlyText]}>{managerBranch?.name ?? 'Your branch'}</Text>
-            <Badge label="Auto-assigned" tone="subtle" />
-          </View>
-        )}
-      </View>
-
       <Card>
         <Toggle
           label="Available"
@@ -468,17 +440,6 @@ const f = StyleSheet.create({
     borderRadius: radius.pill,
   },
   imageBadgeText: { color: colors.textInverse, fontSize: 12, fontWeight: '600' },
-  readonly: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.sm,
-    padding: space.md,
-  },
-  readonlyText: { flex: 1, color: colors.text, fontWeight: '600' },
 });
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
@@ -515,16 +476,18 @@ export default function ProductsScreen() {
     [selectedCat, debounced],
   );
 
+  // Products no longer carry branch ids, so the branch list is fetched only to
+  // name a manager's branch in the header — admins don't need it at all.
   const loadBase = useCallback(async () => {
     try {
       const [cats, branchList] = await Promise.all([
         productsService.getCategories(),
-        productsService.getBranches(),
+        isAdmin ? Promise.resolve(null) : productsService.getBranches(),
       ]);
       setCategories(cats ?? []);
-      setBranches(branchList ?? []);
+      if (branchList) setBranches(branchList);
     } catch {}
-  }, []);
+  }, [isAdmin]);
 
   useEffect(() => { loadBase(); }, [loadBase]);
 
@@ -623,7 +586,6 @@ export default function ProductsScreen() {
         onSaved={() => { products.reload(); loadBase(); }}
         editing={editing}
         categories={categories}
-        branches={branches}
         isAdmin={isAdmin}
       />
     </Screen>

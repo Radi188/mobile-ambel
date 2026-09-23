@@ -182,20 +182,30 @@ function OrderDetail({
 
   const cancelled = order.status === 'cancelled';
 
-  const changeStatus = (status: OrderStatus, title: string, message: string) => {
+  /** Runs a status action, keeping the confirm → busy → close flow in one place. */
+  const runAction = (
+    { title, message, confirm, destructive, action, failure }: {
+      title: string;
+      message: string;
+      confirm: string;
+      destructive?: boolean;
+      action: () => Promise<unknown>;
+      failure: string;
+    },
+  ) => {
     Alert.alert(title, message, [
       { text: 'Back', style: 'cancel' },
       {
-        text: 'Confirm',
-        style: status === 'cancelled' ? 'destructive' : 'default',
+        text: confirm,
+        style: destructive ? 'destructive' : 'default',
         onPress: async () => {
           setBusy(true);
           try {
-            await ordersService.updateStatus(order._id, status);
+            await action();
             onChanged();
             onClose();
           } catch (e: any) {
-            Alert.alert('Error', e?.message ?? 'Could not update this order.');
+            Alert.alert('Error', e?.message ?? failure);
           } finally {
             setBusy(false);
           }
@@ -203,6 +213,25 @@ function OrderDetail({
       },
     ]);
   };
+
+  const handleCancel = () =>
+    runAction({
+      title: 'Cancel order',
+      message: `${order.orderNumber ? `Order #${order.orderNumber}` : 'This order'} will be cancelled and its payment voided.`,
+      confirm: 'Cancel order',
+      destructive: true,
+      action: () => ordersService.cancel(order._id),
+      failure: 'Could not cancel this order.',
+    });
+
+  const handleRestore = () =>
+    runAction({
+      title: 'Restore order',
+      message: 'Mark this order as completed again?',
+      confirm: 'Restore',
+      action: () => ordersService.updateStatus(order._id, 'completed'),
+      failure: 'Could not restore this order.',
+    });
 
   const handleDelete = () => {
     Alert.alert(
@@ -323,7 +352,7 @@ function OrderDetail({
             {cancelled ? (
               <Button
                 label="Mark completed"
-                onPress={() => changeStatus('completed', 'Restore order', 'Mark this order as completed again?')}
+                onPress={handleRestore}
                 loading={busy}
                 size="lg"
                 full
@@ -331,7 +360,7 @@ function OrderDetail({
             ) : (
               <Button
                 label="Cancel order"
-                onPress={() => changeStatus('cancelled', 'Cancel order', 'This order will be marked as cancelled.')}
+                onPress={handleCancel}
                 loading={busy}
                 variant="destructive"
                 size="lg"

@@ -128,7 +128,12 @@ export type Product = {
   sizes: ProductSize[];
   imageUrl?: string;
   isAvailable: boolean;
-  branches: Branch[];
+  /**
+   * Optional: the API no longer takes branch ids when a product is created, so
+   * a product may come back without any branch relation at all. Treat a missing
+   * or empty list as "available in every branch".
+   */
+  branches?: Branch[];
   createdAt: string;
   updatedAt: string;
 };
