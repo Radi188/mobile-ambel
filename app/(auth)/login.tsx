@@ -4,27 +4,20 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { Button, FormModal, Press, TextField } from '../../components/ui';
-import { BASE_URL, getBaseUrl, setBaseUrl } from '../../lib/api';
+import { Button, Press, TextField } from '../../components/ui';
+import { ServerSwitcherModal } from '../../components/ServerSwitcherModal';
+import { PRODUCTION_API_URL } from '../../lib/serverConfig';
 import { useAuth } from '../../context/AuthContext';
 import { colors, layout, radius, shadow, space, text } from '../../constants/theme';
 
 export default function LoginScreen() {
-  const { login } = useAuth();
-  const [username, setUsername] = useState('');
+  const { login, server } = useAuth();
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const [server, setServer] = useState(BASE_URL);
   const [serverOpen, setServerOpen] = useState(false);
-  const [serverDraft, setServerDraft] = useState('');
-  const [serverError, setServerError] = useState('');
-  const [serverSaving, setServerSaving] = useState(false);
-
-  useEffect(() => {
-    getBaseUrl().then(setServer);
-  }, []);
 
   const brand = useRef(new Animated.Value(0)).current;
   const form = useRef(new Animated.Value(0)).current;
@@ -42,14 +35,14 @@ export default function LoginScreen() {
   });
 
   const handleLogin = async () => {
-    if (!username.trim() || !password.trim()) {
-      setError('Enter your username and password.');
+    if (!email.trim() || !password.trim()) {
+      setError('Enter your email and password.');
       return;
     }
     setError('');
     setLoading(true);
     try {
-      await login(username.trim(), password);
+      await login(email.trim(), password);
     } catch (e: any) {
       setError(e?.message ?? 'Invalid credentials. Please try again.');
     } finally {
@@ -57,29 +50,7 @@ export default function LoginScreen() {
     }
   };
 
-  const openServer = () => {
-    setServerDraft(server);
-    setServerError('');
-    setServerOpen(true);
-  };
-
-  const saveServer = async () => {
-    const url = serverDraft.trim();
-    if (url && !/^https?:\/\/[^\s/]+/i.test(url)) {
-      setServerError('Enter a full URL, e.g. https://api.bongpos.com');
-      return;
-    }
-    setServerSaving(true);
-    try {
-      await setBaseUrl(url);
-      setServer(await getBaseUrl());
-      setServerOpen(false);
-    } finally {
-      setServerSaving(false);
-    }
-  };
-
-  const isProduction = server === BASE_URL;
+  const isProduction = server === PRODUCTION_API_URL;
 
   return (
     <SafeAreaView style={s.safe}>
@@ -105,11 +76,12 @@ export default function LoginScreen() {
 
               <View style={s.fields}>
                 <TextField
-                  label="Username"
-                  icon="person-outline"
-                  value={username}
-                  onChangeText={setUsername}
-                  placeholder="Enter your username"
+                  label="Email"
+                  icon="mail-outline"
+                  value={email}
+                  onChangeText={setEmail}
+                  placeholder="you@example.com"
+                  keyboardType="email-address"
                   autoCapitalize="none"
                 />
                 <TextField
@@ -135,7 +107,7 @@ export default function LoginScreen() {
           </View>
 
           <View style={s.footer}>
-            <Press onPress={openServer} style={s.server} accessibilityLabel="Change server">
+            <Press onPress={() => setServerOpen(true)} style={s.server} accessibilityLabel="Change server">
               <Ionicons name="server-outline" size={13} color={colors.textSecondary} />
               <Text style={text.micro} numberOfLines={1}>
                 {isProduction ? 'Production' : server.replace(/^https?:\/\//, '')}
@@ -148,33 +120,7 @@ export default function LoginScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      <FormModal
-        visible={serverOpen}
-        title="Server"
-        onClose={() => setServerOpen(false)}
-        onSubmit={saveServer}
-        submitLabel="Save"
-        submitting={serverSaving}
-        error={serverError}
-      >
-        <TextField
-          label="Base URL"
-          icon="server-outline"
-          value={serverDraft}
-          onChangeText={setServerDraft}
-          placeholder={BASE_URL}
-          autoCapitalize="none"
-          hint={`Leave empty to use production (${BASE_URL}).`}
-        />
-        <Button
-          label="Use production"
-          icon="refresh"
-          variant="secondary"
-          onPress={() => { setServerDraft(BASE_URL); setServerError(''); }}
-          disabled={serverDraft.trim() === BASE_URL}
-          full
-        />
-      </FormModal>
+      <ServerSwitcherModal visible={serverOpen} onClose={() => setServerOpen(false)} />
     </SafeAreaView>
   );
 }

@@ -1,39 +1,99 @@
-import { Shift } from '../types/api.types';
-import { db, delay, fail, scopedOrders, scopedPayments, scopedShifts } from './mock/store';
+import { http } from '../lib/api';
 import {
-  branchReport, cashierReport, filterOrders, filterPayments,
-  orderSummaryReport, productReport, salesReport, shiftSummary,
-} from './mock/reports';
+  BranchReport, CashierReport, OrderSummaryReport, ProductReport, SalesReport, Shift, ShiftTransactions,
+} from '../types/api.types';
+import { listOf, normaliseShift, normaliseShiftSummary, recordOf } from './shape';
 
 export type ReportFilter = { dateFrom?: string; dateTo?: string };
 
 /**
- * Reports over the mock dataset. Everything except the cross-branch report is
- * scoped to the branch the app is currently viewing, matching how the old
- * x-branch-id header behaved.
+ * Money arrives as decimal strings ("12.50"). Reports are read-only figures, so
+ * rather than map every field by name, numeric strings are turned into numbers
+ * throughout — except fields that are ids, names or dates.
+ */
+const KEEP_AS_TEXT = /(id|name|date|method|status|address|phone|email)$/i;
+function numeric<T>(value: any, key = ''): T {
+  if (Array.isArray(value)) return value.map(v => numeric(v, key)) as T;
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, numeric(v, k)])) as T;
+  }
+  if (typeof value === 'string' && !KEEP_AS_TEXT.test(key) && /^-?\d+(\.\d+)?$/.test(value.trim())) {
+    return Number(value) as T;
+  }
+  return value;
+}
+
+const read = <T>(data: unknown) => numeric<T>(recordOf(data) ?? {});
+
+// Defaults for anything a report leaves out, so the screens never read
+// `undefined.total`.
+export const normaliseSalesReport = (data: unknown): SalesReport => {
+  const r = read<any>(data);
+  return {
+    ...r,
+    overview: {
+      totalRevenue: 0, totalTransactions: 0, averageTransaction: 0,
+      totalCashReceived: 0, totalChangeGiven: 0,
+      ...(r.overview ?? {}),
+    },
+    refunds: { total: 0, count: 0, ...(r.refunds ?? {}) },
+    byMethod: r.byMethod ?? [],
+    byDay: r.byDay ?? [],
+  };
+};
+
+const normaliseOrderReport = (data: unknown): OrderSummaryReport => {
+  const r = read<any>(data);
+  return {
+    ...r,
+    overview: { totalOrders: 0, totalValue: 0, averageOrderValue: 0, avgItemsPerOrder: 0, ...(r.overview ?? {}) },
+    byStatus: r.byStatus ?? [],
+    byDay: r.byDay ?? [],
+  };
+};
+
+const normaliseProductReport = (data: unknown): ProductReport => {
+  const r = read<any>(data);
+  return { ...r, topProducts: r.topProducts ?? [], bottomProducts: r.bottomProducts ?? [], byCategory: r.byCategory ?? [] };
+};
+
+export const normaliseBranchReport = (data: unknown): BranchReport => {
+  const r = read<any>(data);
+  return { ...r, branches: r.branches ?? listOf(r) };
+};
+
+/**
+ * Reports. Everything except the cross-branch report is scoped to the branch
+ * the app is currently viewing, through the x-branch-id header.
+ *
+ *   GET /reports/sales-summary   GET /reports/orders   GET /reports/products
+ *   GET /reports/cashiers        GET /reports/branches (super admin)
+ *   GET /shifts                  GET /shifts/:id/summary
  */
 export const reportsService = {
-  getSales: async (filter: ReportFilter = {}) =>
-    delay(salesReport(filterPayments(await scopedPayments(), filter))),
+  getSales: async (params: ReportFilter = {}) =>
+    normaliseSalesReport(await http.get('/reports/sales-summary', { params })),
 
-  getOrderSummary: async (filter: ReportFilter = {}) =>
-    delay(orderSummaryReport(filterOrders(await scopedOrders(), filter))),
+  getOrderSummary: async (params: ReportFilter = {}) =>
+    normaliseOrderReport(await http.get('/reports/orders', { params })),
 
-  getProducts: async (filter: ReportFilter = {}) =>
-    delay(productReport(filterOrders(await scopedOrders(), filter))),
+  getProducts: async (params: ReportFilter = {}) =>
+    normaliseProductReport(await http.get('/reports/products', { params })),
 
-  getCashiers: async (filter: ReportFilter = {}) =>
-    delay(cashierReport(filterOrders(await scopedOrders(), filter))),
+  getCashiers: async (params: ReportFilter = {}): Promise<CashierReport> => {
+    const r = read<any>(await http.get('/reports/cashiers', { params }));
+    return { ...r, cashiers: r.cashiers ?? listOf(r) };
+  },
 
   // Deliberately unscoped: this one exists to compare branches against each other.
-  getBranches: (filter: ReportFilter = {}) =>
-    delay(branchReport(filterOrders(db.orders, filter), filterPayments(db.payments, filter))),
+  getBranches: async (params: ReportFilter = {}) =>
+    normaliseBranchReport(await http.get('/reports/branches', { params, headers: { 'x-skip-branch': '1' } })),
 
-  getShifts: () => scopedShifts().then(list => delay(list)),
+  getShifts: async (): Promise<Shift[]> =>
+    listOf(await http.get('/shifts'))
+      .map(normaliseShift)
+      .sort((a, b) => String(b.openedAt).localeCompare(String(a.openedAt))),
 
-  getShiftSummary: (id: string) => {
-    const shift: Shift | undefined = db.shifts.find(s => s._id === id);
-    if (!shift) fail('Shift not found.');
-    return delay(shiftSummary(shift), 90);
-  },
+  getShiftSummary: async (id: string): Promise<ShiftTransactions> =>
+    normaliseShiftSummary(await http.get(`/shifts/${id}/summary`)),
 };

@@ -26,8 +26,8 @@ export type PagedList<T> = {
  * scroll, and reloads when filters change.
  *
  * `fetchPage` is called with a 1-based page number and must resolve a
- * `Paginated<T>` envelope — the same shape the REST endpoints return, so
- * swapping the mock services for HTTP needs no change here or in the screens.
+ * `Paginated<T>` envelope. The API returns whole lists; the services slice
+ * them into pages (services/shape.ts `paginate`), so the screens never know.
  * `deps` are the filters: whenever one changes the list resets to page 1.
  *
  * Responses from superseded requests are dropped, so fast typing in a search

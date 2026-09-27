@@ -1,8 +1,11 @@
-import { Category, PageQuery, Paginated, Product, ProductReport } from '../types/api.types';
+import { http } from '../lib/api';
+import { Branch, Category, PageQuery, Paginated, Product, ProductReport } from '../types/api.types';
 import {
-  activeBranchId, branchIdOf, db, delay, fail, nextId, nowIso, paginate, scopedOrders,
-} from './mock/store';
-import { filterOrders, productReport } from './mock/reports';
+  listOf, matches, normaliseCategory, normaliseMenuItem, normaliseTopping, paginate,
+  planSizeSync, recordOf, resolveImageUrl, toMenuItemPayload, toMoney,
+} from './shape';
+import { branchesService } from './branches.service';
+import { reportsService } from './reports.service';
 
 export type ProductQuery = PageQuery & {
   category?: string;
@@ -26,126 +29,99 @@ export type ProductPayload = {
   imageUrl?: string;
 };
 
-function categoryId(product: Product): string {
-  return typeof product.category === 'object' ? product.category._id : String(product.category ?? '');
-}
+const fetchCategories = async (): Promise<Category[]> =>
+  listOf(await http.get('/categories')).map(normaliseCategory);
 
+/**
+ * The menu API:
+ *
+ *   GET/POST /menu-items           PATCH/DELETE /menu-items/:id
+ *   GET      /categories           GET/POST/PATCH/DELETE /toppings
+ *   POST     /uploads/images       (multipart, field "file")
+ *
+ *   sizes → POST /menu-items/:id/variation-groups, /variation-groups/:id/options,
+ *           PATCH/DELETE /variation-options/:id
+ *
+ * A menu item's category comes back as an id, so the category list is fetched
+ * alongside to give each product its name.
+ */
 export const productsService = {
-  /**
-   * GET /products?page=&limit=&category=&type=&search= → Paginated<Product>
-   *
-   * Scoped to the active branch, the way the x-branch-id header used to be.
-   * Category filtering is a server-side param now that the list is paged —
-   * filtering a single page in memory would hide matches on later pages.
-   */
   getProducts: async ({ category, type, search, page = 1, limit = 20 }: ProductQuery = {}): Promise<Paginated<Product>> => {
-    const branch = await activeBranchId();
-    const needle = search?.trim().toLowerCase();
+    let list: Product[];
+    if (type === 'topping') {
+      list = listOf(await http.get('/toppings')).map(normaliseTopping);
+    } else {
+      const [items, categories] = await Promise.all([
+        http.get('/menu-items', { params: category ? { categoryId: category } : undefined }),
+        fetchCategories().catch(() => [] as Category[]),
+      ]);
+      const byId = new Map(categories.map(c => [c._id, c]));
+      list = listOf(items).map(item => normaliseMenuItem(item, byId));
+    }
+    const filtered = list.filter(p =>
+      (!category || p.category?._id === category) && matches(search, p.name));
+    return paginate(filtered, page, limit);
+  },
 
-    const list = db.products.filter(product => {
-      if (branch && product.branches?.length && !product.branches.some(b => branchIdOf(b) === branch)) return false;
-      if (category && categoryId(product) !== category) return false;
-      if (type && product.type !== type) return false;
-      if (needle && !product.name.toLowerCase().includes(needle)) return false;
-      return true;
-    });
+  getCategories: async (): Promise<Category[]> =>
+    (await fetchCategories()).filter(c => c.isActive),
 
-    return delay(paginate(list, page, limit));
+  getProductReport: async (dateFrom?: string, dateTo?: string): Promise<ProductReport> =>
+    reportsService.getProducts({ dateFrom, dateTo }),
+
+  create: async (dto: ProductPayload) => {
+    if (dto.type === 'topping') {
+      return normaliseTopping(recordOf(await http.post('/toppings', {
+        name: dto.name.trim(),
+        priceDelta: toMoney(dto.sizes[0]?.price ?? 0),
+      })));
+    }
+    const created = normaliseMenuItem(recordOf(await http.post('/menu-items', toMenuItemPayload(dto))));
+    // New items are active; one saved as unavailable is taken off the menu straight away.
+    if (dto.isAvailable === false) await http.delete(`/menu-items/${created._id}`);
+    return created;
   },
 
   /**
-   * GET /categories → Category[]
-   *
-   * Only categories that actually have products in the active branch, so the
-   * filter row can't offer a chip that returns an empty page.
+   * Item fields go through PATCH; sizes through the variation routes, diffed
+   * against what the server holds now. `isAvailable: false` takes the item off
+   * the menu (DELETE deactivates rather than removes).
    */
-  getCategories: async (): Promise<Category[]> => {
-    const branch = await activeBranchId();
-    const present = new Set(
-      db.products
-        .filter(product => !branch || !product.branches?.length || product.branches.some(b => branchIdOf(b) === branch))
-        .map(categoryId),
-    );
-    return delay(db.categories.filter(category => present.has(category._id)));
-  },
-
-  getProductReport: async (dateFrom?: string, dateTo?: string) =>
-    delay(productReport(filterOrders(await scopedOrders(), { dateFrom, dateTo })) as ProductReport),
-
-  create: (dto: ProductPayload) => {
-    const category = db.categories.find(c => c._id === dto.category);
-    if (!category) fail('Pick a category first.');
-
-    const product: Product = {
-      _id: nextId('prd'),
-      name: dto.name,
-      description: dto.description,
-      type: dto.type ?? 'main',
-      category,
-      sizes: dto.sizes.map(size => ({
-        name: size.name,
-        price: size.price,
-        isAvailable: size.isAvailable ?? true,
-      })),
-      imageUrl: dto.imageUrl,
-      isAvailable: dto.isAvailable ?? true,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
-    };
-    db.products.unshift(product);
-    return delay(product);
-  },
-
   update: async (id: string, dto: Partial<ProductPayload>) => {
-    const product = db.products.find(p => p._id === id);
-    if (!product) fail('Product not found.');
-
-    if (dto.name !== undefined) product.name = dto.name;
-    if (dto.description !== undefined) product.description = dto.description;
-    if (dto.type !== undefined) product.type = dto.type;
-    if (dto.isAvailable !== undefined) product.isAvailable = dto.isAvailable;
-    if (dto.imageUrl !== undefined) product.imageUrl = dto.imageUrl;
-    if (dto.category) {
-      const category = db.categories.find(c => c._id === dto.category);
-      if (category) product.category = category;
+    if (dto.type === 'topping') {
+      return normaliseTopping(recordOf(await http.patch(`/toppings/${id}`, {
+        ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+        ...(dto.sizes?.length ? { priceDelta: toMoney(dto.sizes[0].price) } : {}),
+        ...(dto.isAvailable !== undefined ? { isActive: dto.isAvailable } : {}),
+      })));
     }
+
+    await http.patch(`/menu-items/${id}`, toMenuItemPayload(dto, { update: true }));
+
     if (dto.sizes) {
-      product.sizes = dto.sizes.map(size => ({
-        name: size.name,
-        price: size.price,
-        isAvailable: size.isAvailable ?? true,
-      }));
+      const current: any = recordOf(await http.get(`/menu-items/${id}`));
+      for (const op of planSizeSync(id, current?.variationGroups, dto.sizes)) {
+        if (op.method === 'delete') await http.delete(op.url);
+        else await http[op.method](op.url, op.data);
+      }
     }
-    product.updatedAt = nowIso();
+    if (dto.isAvailable === false) await http.delete(`/menu-items/${id}`);
 
-    return delay(product);
+    return normaliseMenuItem(recordOf(await http.get(`/menu-items/${id}`)));
   },
 
-  remove: (id: string) => {
-    const index = db.products.findIndex(product => product._id === id);
-    if (index < 0) fail('Product not found.');
-    db.products.splice(index, 1);
-    return delay(undefined as void);
+  remove: async (id: string) => { await http.delete(`/menu-items/${id}`); },
+
+  /** Uploads the photo, then stores its address on the item as the thumbnail. */
+  uploadImage: async (id: string, image: { uri: string; name: string; type: string }) => {
+    const form = new FormData();
+    form.append('file', image as any);
+    const res: any = recordOf(await http.post('/uploads/images', form));
+    const url = typeof res === 'string' ? res : res?.url ?? res?.imageUrl ?? res?.fileUrl ?? res?.path;
+    if (!url) throw new Error('The upload did not return an image address.');
+    await http.patch(`/menu-items/${id}`, { imageUrl: resolveImageUrl(url) });
+    return normaliseMenuItem(recordOf(await http.get(`/menu-items/${id}`)));
   },
 
-  toggleSize: (id: string, sizeName: string, isAvailable: boolean) => {
-    const product = db.products.find(p => p._id === id);
-    if (!product) fail('Product not found.');
-    const size = product.sizes.find(s => s.name === sizeName);
-    if (size) size.isAvailable = isAvailable;
-    product.updatedAt = nowIso();
-    return delay(product);
-  },
-
-  // No upload target while the app is on mock data — the picked file's local
-  // URI is stored as-is, which renders fine in <Image> on device.
-  uploadImage: (id: string, image: { uri: string; name: string; type: string }) => {
-    const product = db.products.find(p => p._id === id);
-    if (!product) fail('Product not found.');
-    product.imageUrl = image.uri;
-    product.updatedAt = nowIso();
-    return delay(product, 350);
-  },
-
-  getBranches: () => delay([...db.branches]),
+  getBranches: (): Promise<Branch[]> => branchesService.getBranches(),
 };

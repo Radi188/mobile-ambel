@@ -1,5 +1,7 @@
+import { http } from '../lib/api';
 import { Branch, PageQuery, Paginated, User, UserRole } from '../types/api.types';
-import { branchIdOf, db, delay, fail, nextId, nowIso, paginate } from './mock/store';
+import { listOf, matches, normaliseRole, normaliseUser, paginate, recordOf } from './shape';
+import { branchesService } from './branches.service';
 
 export type UserQuery = PageQuery & {
   role?: UserRole;
@@ -16,61 +18,76 @@ export type UserPayload = {
   isActive?: boolean;
 };
 
-function resolveBranch(id?: string): Branch | null {
-  if (!id) return null;
-  return db.branches.find(branch => branch._id === id) ?? null;
+const branchIdOf = (user: User) =>
+  typeof user.branch === 'object' && user.branch ? user.branch._id : (user.branch as string | null) ?? '';
+
+/**
+ * The server assigns a role by id, from GET /roles. The app picks by name
+ * (super_admin | manager | cashier), so the name is looked up here.
+ */
+async function roleIdFor(role: UserRole): Promise<string> {
+  const roles = listOf(await http.get('/roles'));
+  const match = roles.find((r: any) => normaliseRole(r) === role);
+  if (!match) throw new Error(`This server has no “${role.replace('_', ' ')}” role.`);
+  return String(match.id ?? match._id);
 }
 
+/**
+ * GET    /users                 the staff list
+ * POST   /users                 { email, password, fullName, roleId, branchId? }
+ * PATCH  /users/:id             { fullName, isActive }
+ * PATCH  /users/:id/role        { roleId }
+ * PATCH  /users/:id/password    { password }
+ * DELETE /users/:id
+ */
 export const usersService = {
-  /** GET /users?page=&limit=&role=&branch=&search= → Paginated<User> */
-  getUsers: ({ role, branch, search, page = 1, limit = 20 }: UserQuery = {}): Promise<Paginated<User>> => {
-    const needle = search?.trim().toLowerCase();
-    const list = db.users.filter(user => {
+  getUsers: async ({ role, branch, search, page = 1, limit = 20 }: UserQuery = {}): Promise<Paginated<User>> => {
+    const list = listOf(await http.get('/users')).map(normaliseUser).filter(user => {
       if (role && user.role !== role) return false;
-      if (branch && branchIdOf(user.branch) !== branch) return false;
-      if (needle && !`${user.name} ${user.email}`.toLowerCase().includes(needle)) return false;
-      return true;
+      if (branch && branchIdOf(user) !== branch) return false;
+      return matches(search, user.name, user.email);
     });
-    return delay(paginate(list, page, limit));
+    return paginate(list, page, limit);
   },
 
-  create: (dto: UserPayload) => {
-    if (db.users.some(user => user.email.toLowerCase() === dto.email.toLowerCase())) {
-      fail('That email is already in use.');
-    }
-    const user: User = {
-      _id: nextId('usr'),
-      name: dto.name,
-      email: dto.email,
-      role: dto.role ?? 'cashier',
-      branch: resolveBranch(dto.branch),
-      isActive: dto.isActive ?? true,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
+  create: async (dto: UserPayload) => {
+    const body = {
+      email: dto.email.trim().toLowerCase(),
+      password: dto.password,
+      fullName: dto.name.trim(),
+      roleId: await roleIdFor(dto.role ?? 'cashier'),
     };
-    db.users.push(user);
-    return delay(user);
+    // ambel-mobile doesn't send a branch, so the DTO may refuse one ("property
+    // branchId should not exist") — then the account is created without it.
+    if (!dto.branch) return normaliseUser(recordOf(await http.post('/users', body)));
+    try {
+      return normaliseUser(recordOf(await http.post('/users', { ...body, branchId: dto.branch })));
+    } catch (e: any) {
+      if (!/branchId should not exist/i.test(e?.message ?? '')) throw e;
+      return normaliseUser(recordOf(await http.post('/users', body)));
+    }
   },
 
-  update: (id: string, dto: Partial<UserPayload>) => {
-    const user = db.users.find(u => u._id === id);
-    if (!user) fail('User not found.');
-    const { branch, password, ...rest } = dto;
-    Object.assign(user, rest, { updatedAt: nowIso() });
-    if (branch !== undefined) user.branch = resolveBranch(branch);
-    return delay(user);
+  /**
+   * The role has its own route, so changing a name can't quietly change
+   * someone's permissions along the way — it's only called when it changed.
+   */
+  update: async (id: string, dto: Partial<UserPayload>) => {
+    let user = normaliseUser(recordOf(await http.patch(`/users/${id}`, {
+      ...(dto.name !== undefined ? { fullName: dto.name.trim() } : {}),
+      ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+    })));
+    if (dto.role && dto.role !== user.role) {
+      const roleId = await roleIdFor(dto.role);
+      user = normaliseUser(recordOf(await http.patch(`/users/${id}/role`, { roleId })));
+    }
+    return user;
   },
 
-  // Passwords aren't stored in the mock backend; the call just has to succeed.
-  changePassword: (_id: string, _password: string) =>
-    delay({ message: 'Password updated' }),
+  changePassword: (id: string, password: string) =>
+    http.patch(`/users/${id}/password`, { password }),
 
-  remove: (id: string) => {
-    const index = db.users.findIndex(user => user._id === id);
-    if (index < 0) fail('User not found.');
-    db.users.splice(index, 1);
-    return delay(undefined as void);
-  },
+  remove: async (id: string) => { await http.delete(`/users/${id}`); },
 
-  getBranches: () => delay([...db.branches]),
+  getBranches: (): Promise<Branch[]> => branchesService.getBranches(),
 };

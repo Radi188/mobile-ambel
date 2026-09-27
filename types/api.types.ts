@@ -81,6 +81,8 @@ export type User = {
   name: string;
   email: string;
   role: UserRole;
+  /** The server assigns roles by id (`GET /roles`); `role` is its name. */
+  roleId?: string | null;
   branch?: Branch | string | null;
   isActive: boolean;
   createdAt: string;

@@ -1,8 +1,7 @@
-import { Shift } from '../types/api.types';
-import { db, delay, fail, scopedOrders, scopedPayments, scopedShifts } from './mock/store';
-import {
-  branchReport, filterOrders, filterPayments, salesReport, shiftSummary,
-} from './mock/reports';
+import { http } from '../lib/api';
+import { Branch, Order } from '../types/api.types';
+import { listOf, normaliseBranch, normaliseOrder, sortNewestFirst } from './shape';
+import { normaliseBranchReport, normaliseSalesReport, reportsService } from './reports.service';
 
 function isoDate(d: Date) {
   return d.toISOString().split('T')[0];
@@ -10,27 +9,23 @@ function isoDate(d: Date) {
 
 export const dashboardService = {
   getSalesReport: async (dateFrom?: string, dateTo?: string) =>
-    delay(salesReport(filterPayments(await scopedPayments(), { dateFrom, dateTo }))),
+    normaliseSalesReport(await http.get('/reports/sales-summary', { params: { dateFrom, dateTo } })),
 
-  getBranchReport: (dateFrom?: string, dateTo?: string) =>
-    delay(branchReport(
-      filterOrders(db.orders, { dateFrom, dateTo }),
-      filterPayments(db.payments, { dateFrom, dateTo }),
-    )),
+  getBranchReport: async (dateFrom?: string, dateTo?: string) =>
+    normaliseBranchReport(await http.get('/reports/branches', {
+      params: { dateFrom, dateTo },
+      headers: { 'x-skip-branch': '1' },
+    })),
 
-  getRecentOrders: async () => delay((await scopedOrders()).slice(0, 50)),
+  getRecentOrders: async (): Promise<Order[]> =>
+    sortNewestFirst(listOf(await http.get('/orders')).map(normaliseOrder)).slice(0, 50),
 
-  getRecentPayments: async () => delay((await scopedPayments()).slice(0, 50)),
+  getActiveBranches: async (): Promise<Branch[]> =>
+    listOf(await http.get('/branches')).map(normaliseBranch).filter(b => b.isActive),
 
-  getActiveBranches: () => delay(db.branches.filter(branch => branch.isActive)),
+  getShifts: reportsService.getShifts,
 
-  getShifts: () => scopedShifts().then(list => delay(list)),
-
-  getShiftSummary: (id: string) => {
-    const shift: Shift | undefined = db.shifts.find(s => s._id === id);
-    if (!shift) fail('Shift not found.');
-    return delay(shiftSummary(shift), 90);
-  },
+  getShiftSummary: reportsService.getShiftSummary,
 
   // Revenue for each of the last 7 days, oldest → today.
   getWeeklyRevenue: async (): Promise<{ label: string; value: number }[]> => {
@@ -45,10 +40,8 @@ export const dashboardService = {
       return { label: days[d.getDay()], value: 0, key: isoDate(d) };
     });
 
-    const report = salesReport(
-      filterPayments(await scopedPayments(), { dateFrom: isoDate(from), dateTo: isoDate(today) }),
-    );
-    const revenueByDate = new Map((report.byDay ?? []).map(day => [day.date, day.revenue]));
+    const report = await dashboardService.getSalesReport(isoDate(from), isoDate(today));
+    const revenueByDate = new Map((report.byDay ?? []).map(day => [String(day.date).slice(0, 10), day.revenue]));
     buckets.forEach(bucket => { bucket.value = revenueByDate.get(bucket.key) ?? 0; });
 
     return buckets.map(({ label, value }) => ({ label, value }));
