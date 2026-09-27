@@ -78,8 +78,9 @@ finishes processing — no review. **External** testing needs one extra pass:
   JPEG named `.png`, which fails App Store validation — converted to a true
   1024×1024 PNG. If you replace the logo, run:
   `sips -s format png -Z 1024 new-logo.jpg --out assets/logo.png`
-- The API base URL is hardcoded in `lib/api.ts` to
-  `https://ambel.crosscambodia.com/api`. TestFlight builds hit **production
+- The API base URL defaults to `https://api.bongpos.com` (`BASE_URL` in
+  `lib/api.ts`). It can be overridden per device from the "Server" link on the
+  login screen; without an override, TestFlight builds hit **production
   data** — every test order is a real order.
 - Product images 404 until `uploads/` is deployed to the API server (see the
   notes on the backend `.gitignore`).

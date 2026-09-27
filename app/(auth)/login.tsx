@@ -4,7 +4,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { Button, TextField } from '../../components/ui';
+import { Button, FormModal, Press, TextField } from '../../components/ui';
+import { BASE_URL, getBaseUrl, setBaseUrl } from '../../lib/api';
 import { useAuth } from '../../context/AuthContext';
 import { colors, layout, radius, shadow, space, text } from '../../constants/theme';
 
@@ -14,6 +15,16 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  const [server, setServer] = useState(BASE_URL);
+  const [serverOpen, setServerOpen] = useState(false);
+  const [serverDraft, setServerDraft] = useState('');
+  const [serverError, setServerError] = useState('');
+  const [serverSaving, setServerSaving] = useState(false);
+
+  useEffect(() => {
+    getBaseUrl().then(setServer);
+  }, []);
 
   const brand = useRef(new Animated.Value(0)).current;
   const form = useRef(new Animated.Value(0)).current;
@@ -45,6 +56,30 @@ export default function LoginScreen() {
       setLoading(false);
     }
   };
+
+  const openServer = () => {
+    setServerDraft(server);
+    setServerError('');
+    setServerOpen(true);
+  };
+
+  const saveServer = async () => {
+    const url = serverDraft.trim();
+    if (url && !/^https?:\/\/[^\s/]+/i.test(url)) {
+      setServerError('Enter a full URL, e.g. https://api.bongpos.com');
+      return;
+    }
+    setServerSaving(true);
+    try {
+      await setBaseUrl(url);
+      setServer(await getBaseUrl());
+      setServerOpen(false);
+    } finally {
+      setServerSaving(false);
+    }
+  };
+
+  const isProduction = server === BASE_URL;
 
   return (
     <SafeAreaView style={s.safe}>
@@ -100,11 +135,46 @@ export default function LoginScreen() {
           </View>
 
           <View style={s.footer}>
+            <Press onPress={openServer} style={s.server} accessibilityLabel="Change server">
+              <Ionicons name="server-outline" size={13} color={colors.textSecondary} />
+              <Text style={text.micro} numberOfLines={1}>
+                {isProduction ? 'Production' : server.replace(/^https?:\/\//, '')}
+              </Text>
+              <Ionicons name="chevron-forward" size={12} color={colors.textTertiary} />
+            </Press>
             <View style={s.rule} />
             <Text style={text.micro}>© 2026 BongPOS · All rights reserved</Text>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <FormModal
+        visible={serverOpen}
+        title="Server"
+        onClose={() => setServerOpen(false)}
+        onSubmit={saveServer}
+        submitLabel="Save"
+        submitting={serverSaving}
+        error={serverError}
+      >
+        <TextField
+          label="Base URL"
+          icon="server-outline"
+          value={serverDraft}
+          onChangeText={setServerDraft}
+          placeholder={BASE_URL}
+          autoCapitalize="none"
+          hint={`Leave empty to use production (${BASE_URL}).`}
+        />
+        <Button
+          label="Use production"
+          icon="refresh"
+          variant="secondary"
+          onPress={() => { setServerDraft(BASE_URL); setServerError(''); }}
+          disabled={serverDraft.trim() === BASE_URL}
+          full
+        />
+      </FormModal>
     </SafeAreaView>
   );
 }
@@ -163,5 +233,13 @@ const s = StyleSheet.create({
   errorText: { flex: 1, color: colors.text, fontWeight: '500' },
 
   footer: { alignItems: 'center', gap: space.md },
+  server: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.xs,
+    maxWidth: '100%',
+    paddingHorizontal: space.md,
+    paddingVertical: space.xs,
+  },
   rule: { width: 24, height: StyleSheet.hairlineWidth, backgroundColor: colors.borderStrong },
 });

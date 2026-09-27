@@ -10,7 +10,23 @@
 import axios from 'axios';
 import { storage } from './storage';
 
-export const BASE_URL = 'https://ambel.crosscambodia.com/api';
+/** Production server — used unless a custom server is set on the login screen. */
+export const BASE_URL = 'https://api.bongpos.com';
+
+/** The server requests go to: the saved override, or production. */
+export async function getBaseUrl() {
+  return (await storage.getBaseUrl()) ?? BASE_URL;
+}
+
+/**
+ * Saves a custom server. Saving the production URL (or an empty value) clears
+ * the override, so the app follows BASE_URL again.
+ */
+export async function setBaseUrl(url: string) {
+  const clean = url.trim().replace(/\/+$/, '');
+  if (!clean || clean === BASE_URL) await storage.removeBaseUrl();
+  else await storage.setBaseUrl(clean);
+}
 
 const api = axios.create({
   baseURL: BASE_URL,
@@ -19,6 +35,8 @@ const api = axios.create({
 });
 
 api.interceptors.request.use(async (config) => {
+  config.baseURL = await getBaseUrl();
+
   const token = await storage.getToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
 
