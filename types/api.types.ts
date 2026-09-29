@@ -243,7 +243,12 @@ export type SalesReportOverview = {
 };
 
 export type SalesReportByMethod = {
-  method: 'cash' | 'card' | 'qr';
+  /** Broad type — cash / card / qr. */
+  method: string;
+  /** The configured method ("aba_qr"), when the server sends one. */
+  methodCode?: string;
+  /** What to show ("ABA QR"). */
+  methodName?: string;
   total: number;
   count: number;
 };
@@ -313,6 +318,50 @@ export type CashierReportItem = {
 
 export type CashierReport = {
   cashiers: CashierReportItem[];
+};
+
+// GET /reports/shifts — per-shift cash-up, names already resolved server-side
+export type ShiftReportRow = {
+  shiftId: string;
+  cashierName: string;
+  branchName: string;
+  status: string;
+  openedAt: string;
+  closedAt?: string | null;
+  revenue: number;
+  orders: number;
+  transactions: number;
+  cashSales: number;
+  openingCash: number;
+  closingCash: number;
+  expenses: number;
+  /** Counted minus expected once closed; null while open. */
+  difference: number | null;
+};
+
+export type ShiftReport = {
+  overview: {
+    totalShifts: number;
+    openShifts: number;
+    totalRevenue: number;
+    totalCashSales: number;
+    totalExpenses: number;
+    totalOrders: number;
+  };
+  shifts: ShiftReportRow[];
+};
+
+// GET /reports/payment-methods — takings per method, one entry per branch
+export type PaymentMethodsBranch = {
+  branchId: string;
+  branchName: string;
+  total: number;
+  transactions: number;
+  methods: SalesReportByMethod[];
+};
+
+export type PaymentMethodsReport = {
+  branches: PaymentMethodsBranch[];
 };
 
 // GET /reports/branches

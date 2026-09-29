@@ -63,10 +63,25 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Dev builds log every report call — what was asked (range, branch scope) and
+ * what came back — so "why is this $0?" can be answered from the Metro log.
+ */
+function logReport(config: any, status: number | undefined, body: unknown) {
+  if (!__DEV__ || !String(config?.url ?? '').startsWith('/reports')) return;
+  const scope = config.headers?.['x-branch-id'] ?? 'all branches';
+  console.log(`[report] ${config.url}`, JSON.stringify(config.params ?? {}), `branch=${scope}`, `→ ${status}`,
+    JSON.stringify(body)?.slice(0, 600));
+}
+
 api.interceptors.response.use(
-  response => response.data,
+  response => {
+    logReport(response.config, response.status, response.data);
+    return response.data;
+  },
   error => {
     const status: number | undefined = error.response?.status;
+    logReport(error.config, status, error.response?.data ?? error.message);
     // No refresh endpoint — an expired or foreign token means signing in again.
     // Login itself answers 401 for a wrong password, which must not bounce the
     // login screen.

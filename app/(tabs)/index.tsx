@@ -1,39 +1,46 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import {
   Avatar, Badge, Card, CardHeader, EmptyState, List, ListRow,
-  Press, Screen, ScreenHeader, Segmented, Sheet, Skeleton, SkeletonDashboard, StatTile,
+  Press, Screen, Segmented, Sheet, Skeleton, SkeletonDashboard, StatTile,
 } from '../../components/ui';
+import { useResponsive } from '../../lib/responsive';
 import { BarChart } from '../../components/charts/BarChart';
 import { useAuth } from '../../context/AuthContext';
-import { dashboardService } from '../../services/dashboard.service';
-import { Branch, Order, SalesReport, Shift, ShiftTransactions } from '../../types/api.types';
+import { dashboardService, localDate } from '../../services/dashboard.service';
 import {
-  colors, count, money, moneyCompact, plural, radius, space, text, toNumber,
+  Branch, OrderSummaryReport, ProductReportItem, SalesReport, ShiftReport,
+} from '../../types/api.types';
+import {
+  colors, count, money, money2, moneyCompact, plural, radius, space, text, toNumber,
 } from '../../constants/theme';
 
 // ─── Period filter ────────────────────────────────────────────────────────────
 
-type Period = 'month' | 'lastMonth' | 'total';
+type Period = 'today' | 'yesterday' | 'week' | 'month';
 
+// Always an explicit range, as ambel-mobile sends: an open-ended request is
+// left to the server's default, which is not "all time".
 const PERIODS: { key: Period; label: string }[] = [
-  { key: 'month', label: 'This month' },
-  { key: 'lastMonth', label: 'Last month' },
-  { key: 'total', label: 'All time' },
+  { key: 'today', label: 'Today' },
+  { key: 'yesterday', label: 'Yesterday' },
+  { key: 'week', label: 'Week' },
+  { key: 'month', label: 'Month' },
 ];
 
-function isoDate(d: Date): string {
-  return d.toISOString().split('T')[0];
-}
-
-function periodRange(p: Period): { dateFrom?: string; dateTo?: string } {
-  if (p === 'total') return {};
+function periodRange(p: Period): { dateFrom: string; dateTo: string } {
   const now = new Date();
-  const offset = p === 'lastMonth' ? -1 : 0;
-  const start = new Date(now.getFullYear(), now.getMonth() + offset, 1);
-  const end = new Date(now.getFullYear(), now.getMonth() + offset + 1, 0);
-  return { dateFrom: isoDate(start), dateTo: isoDate(end) };
+  if (p === 'yesterday') {
+    const y = new Date(now);
+    y.setDate(now.getDate() - 1);
+    return { dateFrom: localDate(y), dateTo: localDate(y) };
+  }
+  const start = new Date(now);
+  if (p === 'week') start.setDate(now.getDate() - ((now.getDay() + 6) % 7)); // Monday
+  if (p === 'month') start.setDate(1);
+  return { dateFrom: localDate(start), dateTo: localDate(now) };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -54,9 +61,22 @@ function timeAgo(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString();
 }
 
-function shiftBranchName(shift: Shift): string {
-  const b = shift.branch;
-  return typeof b === 'object' && b ? b.name : '';
+/**
+ * The three biggest payment methods by takings. The server groups by the
+ * configured method ("ABA QR", "Wing"), so the names come from the data rather
+ * than a fixed cash/card/qr list that read $0 whenever a code didn't match.
+ */
+function topMethods(sales: SalesReport | null): { key: string; label: string; total: number }[] {
+  const rows = [...(sales?.byMethod ?? [])]
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 3)
+    .map(m => ({
+      key: m.methodCode || m.method,
+      label: String(m.methodName || m.method || m.methodCode || '—'),
+      total: m.total,
+    }));
+  if (rows.length) return rows;
+  return ['Cash', 'Card', 'QR'].map(label => ({ key: label, label, total: 0 }));
 }
 
 // ─── Hero ─────────────────────────────────────────────────────────────────────
@@ -67,8 +87,7 @@ function RevenueHero({ sales, period, onPeriod, loading }: {
   onPeriod: (p: Period) => void;
   loading: boolean;
 }) {
-  const byMethod: Record<string, number> = {};
-  (sales?.byMethod ?? []).forEach(m => { byMethod[m.method] = m.total; });
+  const methods = topMethods(sales);
 
   return (
     <Card tone="inverse" style={hero.card}>
@@ -90,11 +109,11 @@ function RevenueHero({ sales, period, onPeriod, loading }: {
       </View>
 
       <View style={hero.chips}>
-        {(['cash', 'card', 'qr'] as const).map(method => (
-          <View key={method} style={hero.chip}>
-            <Text style={[text.micro, { color: colors.textInverseDim }]}>{method.toUpperCase()}</Text>
+        {methods.map(m => (
+          <View key={m.key} style={hero.chip}>
+            <Text style={[text.micro, { color: colors.textInverseDim }]} numberOfLines={1}>{m.label.toUpperCase()}</Text>
             <Text style={[text.smallStrong, { color: colors.textInverse }]} numberOfLines={1}>
-              {moneyCompact(byMethod[method] ?? 0)}
+              {moneyCompact(m.total)}
             </Text>
           </View>
         ))}
@@ -119,44 +138,127 @@ const hero = StyleSheet.create({
   },
 });
 
-// ─── Branch switcher ──────────────────────────────────────────────────────────
+// ─── Header ───────────────────────────────────────────────────────────────────
 
-function BranchSwitch({ label, onPress, disabled }: { label: string; onPress: () => void; disabled?: boolean }) {
-  return (
-    <Press onPress={onPress} disabled={disabled} scaleTo={0.96} style={bs.button}>
-      <Ionicons name="business-outline" size={14} color={colors.text} />
-      <Text style={[text.smallStrong, bs.label]} numberOfLines={1}>{label}</Text>
-      <Ionicons name="chevron-down" size={14} color={colors.textTertiary} />
+function roleLabel(role?: string): string {
+  if (role === 'super_admin') return 'Admin';
+  if (role === 'manager') return 'Manager';
+  return 'Cashier';
+}
+
+function todayLabel(): string {
+  return new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+}
+
+/**
+ * Phone: greeting + avatar on one row, branch switcher full width beneath it so
+ * it's an easy thumb target. Tablet: everything on a single row, switcher sits
+ * next to the avatar.
+ */
+function DashboardHeader({ name, role, branch, onBranch, branchDisabled }: {
+  name?: string;
+  role?: string;
+  /** Omit to hide the switcher (non-admins, or no branches yet). */
+  branch?: string;
+  onBranch: () => void;
+  branchDisabled?: boolean;
+}) {
+  const router = useRouter();
+  const { isTablet } = useResponsive();
+  const firstName = name?.trim().split(/\s+/)[0];
+
+  const switcher = branch !== undefined && (
+    <Press
+      onPress={onBranch}
+      disabled={branchDisabled}
+      scaleTo={0.98}
+      style={[hd.branch, isTablet ? hd.branchTablet : hd.branchPhone, branchDisabled && hd.dim]}
+      accessibilityLabel={`Branch: ${branch}. Change branch`}
+    >
+      <View style={hd.branchIcon}>
+        <Ionicons name="business" size={15} color={colors.textInverse} />
+      </View>
+      <View style={hd.branchText}>
+        <Text style={text.overline}>Branch</Text>
+        <Text style={text.smallStrong} numberOfLines={1}>{branch}</Text>
+      </View>
+      <Ionicons name="chevron-down" size={16} color={colors.textTertiary} />
     </Press>
+  );
+
+  return (
+    <View style={hd.wrap}>
+      <View style={hd.row}>
+        <View style={hd.titleBox}>
+          <Text style={text.caption} numberOfLines={1}>
+            {todayLabel()} · {roleLabel(role)}
+          </Text>
+          <Text style={[text.title, isTablet && hd.titleTablet]} numberOfLines={1}>
+            {greeting()}{firstName ? `, ${firstName}` : ''}
+          </Text>
+        </View>
+
+        {isTablet && switcher}
+
+        <Press onPress={() => router.push('/settings')} scaleTo={0.92} accessibilityLabel="Account settings">
+          <Avatar name={name} size={isTablet ? 48 : 44} />
+        </Press>
+      </View>
+
+      {!isTablet && switcher}
+    </View>
   );
 }
 
-const bs = StyleSheet.create({
-  button: {
+const hd = StyleSheet.create({
+  wrap: { gap: space.lg, paddingTop: space.sm, paddingBottom: space.xs },
+  row: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  titleBox: { flex: 1, gap: 2 },
+  titleTablet: { fontSize: 32, letterSpacing: -0.9 },
+  branch: {
     flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'flex-start',
-    gap: 6,
-    paddingHorizontal: space.md,
+    gap: space.md,
     paddingVertical: space.sm,
-    borderRadius: radius.pill,
+    paddingLeft: space.sm,
+    paddingRight: space.md,
+    borderRadius: radius.md,
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
   },
-  label: { maxWidth: 200 },
+  branchPhone: { alignSelf: 'stretch' },
+  branchTablet: { width: 260 },
+  branchIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: radius.xs,
+    backgroundColor: colors.surfaceInverse,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  branchText: { flex: 1, gap: 1 },
+  dim: { opacity: 0.5 },
 });
 
+/** `activeId` null = every branch. */
 function BranchSheet({ visible, branches, activeId, onSelect, onClose }: {
   visible: boolean;
   branches: Branch[];
   activeId: string | null;
-  onSelect: (id: string) => void;
+  onSelect: (id: string | null) => void;
   onClose: () => void;
 }) {
   return (
-    <Sheet visible={visible} onClose={onClose} title="Branch" subtitle="Scope every figure to one location">
+    <Sheet visible={visible} onClose={onClose} title="Branch" subtitle="Scope every figure to one location, or see them all">
       <List>
+        <ListRow
+          title="All branches"
+          subtitle={`Every location combined · ${plural(branches.length, 'branch', 'branches')}`}
+          leading={<Avatar icon="layers" size={38} tone={activeId === null ? 'solid' : 'sunken'} />}
+          badge={activeId === null ? <Badge label="Active" tone="solid" /> : undefined}
+          onPress={() => { onSelect(null); onClose(); }}
+        />
         {branches.map(branch => {
           const active = branch._id === activeId;
           return (
@@ -175,7 +277,52 @@ function BranchSheet({ visible, branches, activeId, onSelect, onClose }: {
   );
 }
 
+// ─── Top items ────────────────────────────────────────────────────────────────
+
+function TopItems({ items }: { items: ProductReportItem[] }) {
+  const max = Math.max(...items.map(i => i.totalQuantity), 1);
+  return (
+    <Card>
+      <CardHeader title="Top selling" subtitle={items.length > 0 ? `Best ${items.length} by quantity` : undefined} />
+      {items.length === 0 ? (
+        <Text style={[text.small, ti.empty]}>No sales in this period yet.</Text>
+      ) : (
+        <View style={ti.list}>
+          {items.map((item, idx) => (
+            <View key={String(item.productId ?? idx)} style={ti.row}>
+              <Text style={[text.smallStrong, ti.rank]}>{idx + 1}</Text>
+              <View style={ti.body}>
+                <Text style={text.smallStrong} numberOfLines={1}>{item.productName || 'Item'}</Text>
+                <View style={ti.track}>
+                  <View style={[ti.fill, { width: `${(item.totalQuantity / max) * 100}%` }]} />
+                </View>
+              </View>
+              <View style={ti.figures}>
+                <Text style={text.money}>{moneyCompact(item.totalRevenue)}</Text>
+                <Text style={text.micro}>{count(item.totalQuantity)} sold</Text>
+              </View>
+            </View>
+          ))}
+        </View>
+      )}
+    </Card>
+  );
+}
+
+const ti = StyleSheet.create({
+  empty: { marginTop: space.lg },
+  list: { marginTop: space.lg, gap: space.lg },
+  row: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  rank: { width: 18, color: colors.textTertiary },
+  body: { flex: 1, gap: 6 },
+  track: { height: 6, borderRadius: 3, backgroundColor: colors.track, overflow: 'hidden' },
+  fill: { height: '100%', borderRadius: 3, backgroundColor: colors.accent },
+  figures: { alignItems: 'flex-end', gap: 1 },
+});
+
 // ─── Screen ───────────────────────────────────────────────────────────────────
+
+const PERIOD_NOTE: Record<Period, string> = { today: 'today', yesterday: 'yesterday', week: 'this week', month: 'this month' };
 
 export default function DashboardScreen() {
   const { user, activeBranchId, switchBranch } = useAuth();
@@ -183,56 +330,62 @@ export default function DashboardScreen() {
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [period, setPeriod] = useState<Period>('today');
+  const [periodLoading, setPeriodLoading] = useState(false);
   const [sales, setSales] = useState<SalesReport | null>(null);
-  const [period, setPeriod] = useState<Period>('total');
-  const [salesLoading, setSalesLoading] = useState(false);
+  const [orders, setOrders] = useState<OrderSummaryReport | null>(null);
+  const [topItems, setTopItems] = useState<ProductReportItem[]>([]);
+  const [shiftReport, setShiftReport] = useState<ShiftReport | null>(null);
   const [branches, setBranches] = useState<Branch[]>([]);
-  const [shiftRows, setShiftRows] = useState<{ shift: Shift; tx: ShiftTransactions | null }[]>([]);
-  const [discounts, setDiscounts] = useState(0);
   const [weekly, setWeekly] = useState<{ label: string; value: number }[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Admins start on every branch combined, as in ambel-mobile. Picking one
+  // branch scopes the dashboard to it (and makes it the app's active branch).
+  const [allBranches, setAllBranches] = useState(isAdmin);
+  const scopeAll = isAdmin && allBranches;
 
-  const branchName = branches.find(b => b._id === activeBranchId)?.name ?? 'Select branch';
+  const branchName = scopeAll
+    ? 'All branches'
+    : branches.find(b => b._id === activeBranchId)?.name ?? 'Select branch';
   const weekTotal = weekly.reduce((sum, d) => sum + d.value, 0);
+  const recentShifts = (shiftReport?.shifts ?? []).slice(0, 5);
+
+  // Everything the period filter drives. Each report settles on its own, so one
+  // failing endpoint blanks its own card instead of the whole screen.
+  const loadPeriod = useCallback(async (p: Period) => {
+    const f = { ...periodRange(p), allBranches: scopeAll };
+    const [s, o, t, sh] = await Promise.allSettled([
+      dashboardService.getSalesReport(f),
+      dashboardService.getOrderSummary(f),
+      dashboardService.getTopProducts(f),
+      dashboardService.getShiftReport(f),
+    ]);
+    if (s.status === 'fulfilled') setSales(s.value);
+    if (o.status === 'fulfilled') setOrders(o.value);
+    if (t.status === 'fulfilled') setTopItems(t.value);
+    if (sh.status === 'fulfilled') setShiftReport(sh.value);
+  }, [scopeAll]);
 
   const loadData = useCallback(async () => {
-    try {
-      const range = periodRange(period);
-      const tasks: Promise<any>[] = [
-        dashboardService.getSalesReport(range.dateFrom, range.dateTo),
-        dashboardService.getRecentOrders(),
-        dashboardService.getWeeklyRevenue(),
-        dashboardService.getShifts(),
-      ];
-      if (isAdmin) tasks.push(dashboardService.getActiveBranches());
-
-      const [salesData, orders, week, shifts, branchList] = await Promise.all(tasks);
-      setSales(salesData);
-      setDiscounts((orders ?? []).reduce((sum: number, o: Order) => sum + toNumber(o.discountAmount), 0));
-
-      // Most recent shifts plus their live transaction totals.
-      const recent: Shift[] = (shifts ?? []).slice(0, 5);
-      const summaries = await Promise.all(
-        recent.map(sh => dashboardService.getShiftSummary(sh._id).catch(() => null)),
-      );
-      setShiftRows(recent.map((shift, idx) => ({ shift, tx: summaries[idx] })));
-      setWeekly(week);
-
-      if (isAdmin) {
-        // Keep the fullest list we've seen so the switcher can't collapse if the
-        // branches endpoint ever scopes itself to the selected branch.
-        setBranches(prev => ((branchList?.length ?? 0) >= prev.length ? (branchList ?? []) : prev));
-      }
-    } catch {
-      // keep whatever we already have on screen
+    const [, week, branchList] = await Promise.allSettled([
+      loadPeriod(period),
+      dashboardService.getWeeklyRevenue(scopeAll),
+      isAdmin ? dashboardService.getActiveBranches() : Promise.resolve([] as Branch[]),
+    ]);
+    if (week.status === 'fulfilled') setWeekly(week.value);
+    if (isAdmin && branchList.status === 'fulfilled') {
+      // Keep the fullest list we've seen so the switcher can't collapse if the
+      // branches endpoint ever scopes itself to the selected branch.
+      const list = branchList.value;
+      setBranches(prev => (list.length >= prev.length ? list : prev));
     }
-  }, [isAdmin, period]);
+  }, [isAdmin, period, loadPeriod]);
 
-  // Initial load, and a full reload whenever the admin switches branch.
+  // Initial load, and a full reload whenever the admin switches branch or scope.
   useEffect(() => {
     setLoading(true);
     loadData().finally(() => setLoading(false));
-  }, [activeBranchId]);
+  }, [activeBranchId, scopeAll]);
 
   // Admins always view a single branch. Fall back to the first one when nothing
   // is selected, or when the stored id no longer matches a branch — a branch can
@@ -243,19 +396,15 @@ export default function DashboardScreen() {
     if (!known) switchBranch(branches[0]._id);
   }, [isAdmin, activeBranchId, branches, switchBranch]);
 
-  // Period changes only need the revenue report, not the whole screen.
+  // Period changes only reload the period's reports, not the whole screen.
   const periodMounted = useRef(false);
   useEffect(() => {
     if (!periodMounted.current) { periodMounted.current = true; return; }
     let cancelled = false;
-    setSalesLoading(true);
-    const { dateFrom, dateTo } = periodRange(period);
-    dashboardService.getSalesReport(dateFrom, dateTo)
-      .then(data => { if (!cancelled) setSales(data); })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setSalesLoading(false); });
+    setPeriodLoading(true);
+    loadPeriod(period).finally(() => { if (!cancelled) setPeriodLoading(false); });
     return () => { cancelled = true; };
-  }, [period]);
+  }, [period, loadPeriod]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -265,48 +414,36 @@ export default function DashboardScreen() {
 
   return (
     <Screen refreshing={refreshing} onRefresh={onRefresh}>
-      <ScreenHeader
-        subtitle={greeting()}
-        title={user?.name ?? 'Dashboard'}
-        right={
-          <View style={s.headerRight}>
-            <Badge label={isAdmin ? 'Admin' : user?.role === 'manager' ? 'Manager' : 'Cashier'} tone="outline" />
-            <Avatar name={user?.name} size={40} />
-          </View>
-        }
-        below={
-          isAdmin && branches.length > 0 ? (
-            <BranchSwitch label={branchName} onPress={() => setPickerOpen(true)} disabled={loading} />
-          ) : undefined
-        }
+      <DashboardHeader
+        name={user?.name}
+        role={user?.role}
+        branch={isAdmin && branches.length > 0 ? branchName : undefined}
+        onBranch={() => setPickerOpen(true)}
+        branchDisabled={loading}
       />
 
       {loading ? (
         <SkeletonDashboard />
       ) : (
         <>
-          <RevenueHero sales={sales} period={period} onPeriod={setPeriod} loading={salesLoading} />
+          <RevenueHero sales={sales} period={period} onPeriod={setPeriod} loading={periodLoading} />
 
           <View style={s.grid}>
-            <StatTile
-              label="Transactions"
-              value={count(sales?.overview?.totalTransactions)}
-              icon="receipt-outline"
-            />
+            <StatTile label="Orders" value={count(orders?.overview?.totalOrders)} icon="receipt-outline" />
             <StatTile
               label="Average order"
-              value={moneyCompact(sales?.overview?.averageTransaction)}
+              value={money2(orders?.overview?.averageOrderValue)}
               icon="trending-up-outline"
             />
             <StatTile
-              label="Discounts"
-              value={discounts > 0 && discounts < 1000 ? `$${discounts.toFixed(2)}` : moneyCompact(discounts)}
-              icon="pricetag-outline"
+              label="Cash sales"
+              value={moneyCompact(shiftReport?.overview?.totalCashSales)}
+              icon="cash-outline"
             />
             <StatTile
-              label={isAdmin ? 'Branches' : 'Cash taken'}
-              value={isAdmin ? String(branches.length) : moneyCompact(sales?.overview?.totalCashReceived)}
-              icon={isAdmin ? 'business-outline' : 'cash-outline'}
+              label="Open shifts"
+              value={count(shiftReport?.overview?.openShifts)}
+              icon="time-outline"
             />
           </View>
 
@@ -319,37 +456,40 @@ export default function DashboardScreen() {
             </Card>
           )}
 
+          <TopItems items={topItems} />
+
           <View style={s.section}>
             <CardHeader
               title="Shifts"
-              subtitle={shiftRows.length > 0 ? `${shiftRows.length} most recent` : undefined}
+              subtitle={
+                recentShifts.length > 0
+                  ? `${plural(shiftReport?.overview?.totalShifts ?? recentShifts.length, 'shift')} ${PERIOD_NOTE[period]}`
+                  : undefined
+              }
             />
-            {shiftRows.length === 0 ? (
+            {recentShifts.length === 0 ? (
               <Card padded={false}>
-                <EmptyState icon="time-outline" title="No shifts yet" message="Transactions appear here once a cashier opens a shift." />
+                <EmptyState icon="time-outline" title={`No shifts ${PERIOD_NOTE[period]}`} message="Shifts appear here once a cashier opens the till." />
               </Card>
             ) : (
               <List>
-                {shiftRows.map(({ shift, tx }) => (
-                  <ListRow
-                    key={shift._id}
-                    title={shift.cashierName || 'Cashier'}
-                    leading={<Avatar name={shift.cashierName} size={40} tone="sunken" />}
-                    badge={
-                      <Badge
-                        label={shift.status === 'open' ? 'Open' : 'Closed'}
-                        tone={shift.status === 'open' ? 'solid' : 'outline'}
-                        dot={shift.status === 'open'}
-                      />
-                    }
-                    meta={[
-                      ...(shiftBranchName(shift) ? [{ icon: 'business-outline' as const, text: shiftBranchName(shift) }] : []),
-                      { icon: 'time-outline' as const, text: timeAgo(shift.openedAt) },
-                    ]}
-                    value={money(tx?.revenue)}
-                    valueSub={plural(toNumber(tx?.orders), 'txn')}
-                  />
-                ))}
+                {recentShifts.map(row => {
+                  const open = row.status !== 'closed';
+                  return (
+                    <ListRow
+                      key={row.shiftId}
+                      title={row.cashierName}
+                      leading={<Avatar name={row.cashierName} size={40} tone="sunken" />}
+                      badge={<Badge label={open ? 'Open' : 'Closed'} tone={open ? 'solid' : 'outline'} dot={open} />}
+                      meta={[
+                        ...(row.branchName ? [{ icon: 'business-outline' as const, text: row.branchName }] : []),
+                        { icon: 'time-outline' as const, text: timeAgo(row.openedAt) },
+                      ]}
+                      value={money(row.revenue)}
+                      valueSub={plural(row.orders, 'order')}
+                    />
+                  );
+                })}
               </List>
             )}
           </View>
@@ -360,8 +500,11 @@ export default function DashboardScreen() {
         <BranchSheet
           visible={pickerOpen}
           branches={branches}
-          activeId={activeBranchId}
-          onSelect={id => { if (id !== activeBranchId) switchBranch(id); }}
+          activeId={scopeAll ? null : activeBranchId}
+          onSelect={id => {
+            setAllBranches(id === null);
+            if (id && id !== activeBranchId) switchBranch(id);
+          }}
           onClose={() => setPickerOpen(false)}
         />
       )}
@@ -370,7 +513,6 @@ export default function DashboardScreen() {
 }
 
 const s = StyleSheet.create({
-  headerRight: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: space.md },
   chart: { marginTop: space.lg },
   section: { gap: space.md },

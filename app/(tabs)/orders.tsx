@@ -9,7 +9,7 @@ import {
 import { usePaginatedList } from '../../lib/usePaginatedList';
 import { useAuth } from '../../context/AuthContext';
 import { ordersService } from '../../services/orders.service';
-import { reportsService } from '../../services/reports.service';
+import { allTimeRange, reportsService } from '../../services/reports.service';
 import { Order, OrderItem, OrderStatus, OrderSummaryReport } from '../../types/api.types';
 import {
   colors, count, money, money2, plural, radius, space, text, toNumber,
@@ -69,9 +69,9 @@ type Totals = {
 };
 
 /**
- * All-time totals come from /reports/orders, which aggregates in Mongo over the
- * whole collection — the list itself is capped at 50 rows, so summing it would
- * silently under-report.
+ * All-time totals come from /reports/orders over an explicit all-time range
+ * (see allTimeRange) — the list on screen is one page, so summing it would
+ * under-report once there are more orders than fit.
  */
 function totalsFromReport(r: OrderSummaryReport): Totals {
   const cancelled = r.byStatus.find(b => b.status === 'cancelled');
@@ -464,7 +464,12 @@ export default function OrdersScreen() {
   // get a 403 from the reports endpoint and fall back to the rows on screen.
   const loadTotals = useCallback(async (loaded: Order[]) => {
     try {
-      setTotals(totalsFromReport(await reportsService.getOrderSummary()));
+      const report = totalsFromReport(await reportsService.getOrderSummary(allTimeRange()));
+      // Safety net: a report that sees nothing while the list plainly has
+      // sales is the server's range/scope disagreeing with us — show what the
+      // list holds rather than a confident $0.
+      const listed = totalsFromList(loaded);
+      setTotals(report.orders === 0 && listed.orders > 0 ? listed : report);
     } catch {
       setTotals(totalsFromList(loaded));
     }
