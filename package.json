@@ -9,6 +9,8 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "doctor": "expo-doctor",
+    "build:adhoc": "eas build --platform ios --profile adhoc",
+    "devices:add": "eas device:create",
     "build:ios": "eas build --platform ios --profile production",
     "submit:ios": "eas submit --platform ios --latest",
     "release:ios": "eas build --platform ios --profile production --auto-submit"
