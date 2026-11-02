@@ -4,15 +4,17 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { Button, Press, TextField } from '../../components/ui';
+import { Button, Press, Segmented, TextField } from '../../components/ui';
 import { ServerSwitcherModal } from '../../components/ServerSwitcherModal';
-import { PRODUCTION_API_URL } from '../../lib/serverConfig';
+import { Backend, BACKEND_KEYS, BACKENDS } from '../../lib/serverConfig';
 import { useAuth } from '../../context/AuthContext';
 import { colors, layout, radius, shadow, space, text } from '../../constants/theme';
 
+const BACKEND_OPTIONS = BACKEND_KEYS.map(key => ({ key, label: BACKENDS[key].label }));
+
 export default function LoginScreen() {
-  const { login, server } = useAuth();
-  const [email, setEmail] = useState('');
+  const { login, backend, server, switchServer } = useAuth();
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -21,6 +23,20 @@ export default function LoginScreen() {
 
   const brand = useRef(new Animated.Value(0)).current;
   const form = useRef(new Animated.Value(0)).current;
+
+  // BongPOS signs in by email, Ambel by username.
+  const isEmail = backend === 'bongpos';
+  const credential = isEmail ? 'email' : 'username';
+
+  const switchBackend = async (next: Backend) => {
+    setIdentifier('');
+    setError('');
+    try {
+      await switchServer(next);
+    } catch (e: any) {
+      setError(e?.message ?? 'Could not switch server.');
+    }
+  };
 
   useEffect(() => {
     Animated.stagger(120, [
@@ -35,14 +51,14 @@ export default function LoginScreen() {
   });
 
   const handleLogin = async () => {
-    if (!email.trim() || !password.trim()) {
-      setError('Enter your email and password.');
+    if (!identifier.trim() || !password.trim()) {
+      setError(`Enter your ${credential} and password.`);
       return;
     }
     setError('');
     setLoading(true);
     try {
-      await login(email.trim(), password);
+      await login(identifier.trim(), password);
     } catch (e: any) {
       setError(e?.message ?? 'Invalid credentials. Please try again.');
     } finally {
@@ -50,7 +66,7 @@ export default function LoginScreen() {
     }
   };
 
-  const isProduction = server === PRODUCTION_API_URL;
+  const isProduction = server === BACKENDS[backend].url;
 
   return (
     <SafeAreaView style={s.safe}>
@@ -65,7 +81,7 @@ export default function LoginScreen() {
               <View style={s.mark}>
                 <Image source={require('../../assets/logo-mark.png')} style={s.logo} resizeMode="contain" />
               </View>
-              <Text style={text.overline}>BongPOS Owner</Text>
+              <Text style={text.overline}>{BACKENDS[backend].label} Owner</Text>
             </Animated.View>
 
             <Animated.View style={[s.form, rise(form, 22)]}>
@@ -75,13 +91,14 @@ export default function LoginScreen() {
               </View>
 
               <View style={s.fields}>
+                <Segmented options={BACKEND_OPTIONS} value={backend} onChange={switchBackend} />
                 <TextField
-                  label="Email"
-                  icon="mail-outline"
-                  value={email}
-                  onChangeText={setEmail}
-                  placeholder="you@example.com"
-                  keyboardType="email-address"
+                  label={isEmail ? 'Email' : 'Username'}
+                  icon={isEmail ? 'mail-outline' : 'person-outline'}
+                  value={identifier}
+                  onChangeText={setIdentifier}
+                  placeholder={isEmail ? 'you@example.com' : 'Enter your username'}
+                  keyboardType={isEmail ? 'email-address' : 'default'}
                   autoCapitalize="none"
                 />
                 <TextField

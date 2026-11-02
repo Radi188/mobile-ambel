@@ -3,7 +3,7 @@ import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Button, FormModal, Segmented, TextField } from './ui';
 import { useAuth } from '../context/AuthContext';
-import { normaliseBaseUrl, PRODUCTION_API_URL, ServerTest, testServer } from '../lib/serverConfig';
+import { BACKENDS, normaliseBaseUrl, ServerTest, testServer } from '../lib/serverConfig';
 import { colors, space, text } from '../constants/theme';
 
 type Choice = 'production' | 'custom';
@@ -11,12 +11,14 @@ type Choice = 'production' | 'custom';
 type Props = { visible: boolean; onClose: () => void };
 
 /**
- * The login screen's "which server" sheet, as in ambel-mobile: production or a
- * custom address (staging, a laptop on the shop's Wi-Fi), a connection test,
- * and a switch that forgets the old server's session.
+ * The login screen's "which server" sheet, as in ambel-mobile, for the backend
+ * picked there (BongPOS or Ambel): its production address or a custom one
+ * (staging, a laptop on the shop's Wi-Fi), a connection test, and a switch
+ * that forgets the old server's session.
  */
 export function ServerSwitcherModal({ visible, onClose }: Props) {
-  const { server, switchServer } = useAuth();
+  const { backend, server, switchServer } = useAuth();
+  const { label, url: production } = BACKENDS[backend];
   const [choice, setChoice] = useState<Choice>('production');
   const [url, setUrl] = useState('');
   const [test, setTest] = useState<ServerTest | 'running' | null>(null);
@@ -26,27 +28,27 @@ export function ServerSwitcherModal({ visible, onClose }: Props) {
   // Start from whatever is in use each time the sheet opens.
   useEffect(() => {
     if (!visible) return;
-    const custom = server !== PRODUCTION_API_URL;
+    const custom = server !== production;
     setChoice(custom ? 'custom' : 'production');
     setUrl(custom ? server : '');
     setTest(null);
     setError('');
-  }, [visible, server]);
+  }, [visible, server, production]);
 
-  const target = choice === 'custom' ? normaliseBaseUrl(url) : PRODUCTION_API_URL;
+  const target = choice === 'custom' ? normaliseBaseUrl(url) : production;
   const unchanged = target === server;
 
   const runTest = async () => {
     if (!target) { setTest({ ok: false, error: 'Enter a server address first.' }); return; }
     setTest('running');
-    setTest(await testServer(target));
+    setTest(await testServer(target, backend));
   };
 
   const save = async () => {
     if (!target) { setError('Enter a server address, e.g. http://192.168.1.7:3000'); return; }
     setSaving(true);
     try {
-      await switchServer(target);
+      await switchServer(backend, target);
       onClose();
     } catch (e: any) {
       setError(e?.message ?? 'Could not switch server.');
@@ -58,7 +60,7 @@ export function ServerSwitcherModal({ visible, onClose }: Props) {
   return (
     <FormModal
       visible={visible}
-      title="Server"
+      title={`${label} server`}
       onClose={onClose}
       onSubmit={unchanged ? onClose : save}
       submitLabel={unchanged ? 'Done' : 'Switch server'}
@@ -66,7 +68,7 @@ export function ServerSwitcherModal({ visible, onClose }: Props) {
       error={error}
     >
       <View style={s.section}>
-        <Text style={text.small}>Which API this device signs in to.</Text>
+        <Text style={text.small}>Where this device reaches {label}.</Text>
         <Segmented
           options={[{ key: 'production', label: 'Production' }, { key: 'custom', label: 'Custom' }]}
           value={choice}
@@ -77,8 +79,8 @@ export function ServerSwitcherModal({ visible, onClose }: Props) {
       {choice === 'production' ? (
         <View style={s.current}>
           <Ionicons name="cloud-outline" size={16} color={colors.textSecondary} />
-          <Text style={[text.small, s.flex]} numberOfLines={1}>{PRODUCTION_API_URL}</Text>
-          {server === PRODUCTION_API_URL && <Text style={text.micro}>In use</Text>}
+          <Text style={[text.small, s.flex]} numberOfLines={1}>{production}</Text>
+          {server === production && <Text style={text.micro}>In use</Text>}
         </View>
       ) : (
         <TextField
@@ -86,7 +88,7 @@ export function ServerSwitcherModal({ visible, onClose }: Props) {
           icon="server-outline"
           value={url}
           onChangeText={v => { setUrl(v); setTest(null); setError(''); }}
-          placeholder="http://192.168.1.7:3000"
+          placeholder={backend === 'ambel' ? 'http://192.168.1.7:3000/api' : 'http://192.168.1.7:3000'}
           autoCapitalize="none"
           error={url && !normaliseBaseUrl(url) ? 'That doesn’t look like a web address.' : undefined}
           hint={target && target !== url.trim() ? `Will use ${target}` : undefined}

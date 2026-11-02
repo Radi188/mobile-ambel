@@ -66,6 +66,8 @@ export type AuthUser = {
   userId: string;
   name: string;
   email: string;
+  /** Ambel accounts sign in with this; BongPOS accounts don't have one. */
+  username?: string;
   role: UserRole;
   branchId?: string;
 };
@@ -80,6 +82,8 @@ export type User = {
   _id: string;
   name: string;
   email: string;
+  /** Ambel only — its sign-in name. */
+  username?: string;
   role: UserRole;
   /** The server assigns roles by id (`GET /roles`); `role` is its name. */
   roleId?: string | null;

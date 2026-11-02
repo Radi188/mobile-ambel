@@ -6,6 +6,7 @@ import {
   Avatar, Badge, Button, Card, Chips, DataRow, Divider, EmptyState, IconButton,
   ListRow, PagedList, RowCard, Screen, ScreenHeader, SearchField, Skeleton, SkeletonList,
 } from '../../components/ui';
+import { DatePreset, DateRange, DateRangeChips, presetRange, rangeLabel } from '../../components/DateRange';
 import { usePaginatedList } from '../../lib/usePaginatedList';
 import { useAuth } from '../../context/AuthContext';
 import { ordersService } from '../../services/orders.service';
@@ -24,6 +25,9 @@ const FILTERS: { key: StatusFilter; label: string }[] = [
   { key: 'completed', label: 'Completed' },
   { key: 'cancelled', label: 'Cancelled' },
 ];
+
+// Everything first: the list opens on every order, as it always has.
+const DATE_PRESETS: DatePreset[] = ['all', 'today', 'yesterday', 'week', 'month', 'last30', 'custom'];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -69,9 +73,9 @@ type Totals = {
 };
 
 /**
- * All-time totals come from /reports/orders over an explicit all-time range
- * (see allTimeRange) — the list on screen is one page, so summing it would
- * under-report once there are more orders than fit.
+ * Totals for the chosen dates come from /reports/orders ("all time" is an
+ * explicit range, see allTimeRange) — the list on screen is one page, so
+ * summing it would under-report once there are more orders than fit.
  */
 function totalsFromReport(r: OrderSummaryReport): Totals {
   const cancelled = r.byStatus.find(b => b.status === 'cancelled');
@@ -115,11 +119,11 @@ function totalsFromList(orders: Order[]): Totals {
   };
 }
 
-function TotalsCard({ totals, loading }: { totals: Totals | null; loading: boolean }) {
+function TotalsCard({ totals, loading, period }: { totals: Totals | null; loading: boolean; period: string }) {
   return (
     <Card tone="inverse" style={t.card}>
       <Text style={[text.overline, { color: colors.textInverseDim }]}>
-        {totals?.allTime === false ? 'Sales · listed orders' : 'Total sales · all time'}
+        {totals?.allTime === false ? 'Sales · listed orders' : `Total sales · ${period}`}
       </Text>
 
       {loading || !totals ? (
@@ -434,6 +438,10 @@ export default function OrdersScreen() {
   const canEdit = user?.role === 'super_admin' || user?.role === 'manager';
 
   const [filter, setFilter] = useState<StatusFilter>('all');
+  const [preset, setPreset] = useState<DatePreset>('all');
+  const [range, setRange] = useState<DateRange>(() => presetRange('all'));
+  // "All time" sends no dates, so the list isn't cut off at the all-time range's start.
+  const dates = preset === 'all' ? {} : range;
   const [search, setSearch] = useState('');
   const [debounced, setDebounced] = useState('');
   const [selected, setSelected] = useState<Order | null>(null);
@@ -455,16 +463,18 @@ export default function OrdersScreen() {
       limit: PAGE_SIZE,
       status: filter === 'all' ? undefined : filter,
       search: debounced || undefined,
+      ...dates,
     }),
-    [filter, debounced],
+    [filter, debounced, range.dateFrom, range.dateTo, preset],
   );
 
-  // The headline totals are all-time aggregates, unaffected by the filters, so
-  // they load alongside the first page and on pull-to-refresh only. Cashiers
-  // get a 403 from the reports endpoint and fall back to the rows on screen.
+  // The headline totals follow the dates but not the status or search, so
+  // they load with the first page of each range and on pull-to-refresh.
+  // Cashiers get a 403 from the reports endpoint and fall back to the rows on
+  // screen.
   const loadTotals = useCallback(async (loaded: Order[]) => {
     try {
-      const report = totalsFromReport(await reportsService.getOrderSummary(allTimeRange()));
+      const report = totalsFromReport(await reportsService.getOrderSummary(preset === 'all' ? allTimeRange() : range));
       // Safety net: a report that sees nothing while the list plainly has
       // sales is the server's range/scope disagreeing with us — show what the
       // list holds rather than a confident $0.
@@ -473,14 +483,17 @@ export default function OrdersScreen() {
     } catch {
       setTotals(totalsFromList(loaded));
     }
-  }, []);
+  }, [preset, range]);
 
-  const totalsInit = useRef(false);
+  // Once per range, after its first page has landed.
+  const totalsFor = useRef<string | null>(null);
   useEffect(() => {
-    if (totalsInit.current || orders.loading) return;
-    totalsInit.current = true;
+    const key = `${preset}|${range.dateFrom}|${range.dateTo}`;
+    if (totalsFor.current === key || orders.loading) return;
+    totalsFor.current = key;
+    setTotalsLoading(true);
     loadTotals(orders.items).finally(() => setTotalsLoading(false));
-  }, [orders.loading, orders.items, loadTotals]);
+  }, [orders.loading, orders.items, loadTotals, preset, range]);
 
   const onRefresh = useCallback(() => {
     orders.refresh();
@@ -526,8 +539,15 @@ export default function OrdersScreen() {
               title="Orders"
               right={<Badge label={`${count(orders.total)} total`} tone="subtle" />}
             />
-            <TotalsCard totals={totals} loading={totalsLoading} />
+            <TotalsCard totals={totals} loading={totalsLoading} period={rangeLabel(preset, range)} />
             <SearchField value={search} onChangeText={setSearch} placeholder="Order #, customer or cashier" />
+            <DateRangeChips
+              preset={preset}
+              range={range}
+              presets={DATE_PRESETS}
+              onChange={(p, r) => { setPreset(p); setRange(r); }}
+              sheetSubtitle="Show orders placed between these dates"
+            />
             <Chips options={FILTERS} value={filter} onChange={setFilter} />
           </>
         }
@@ -538,13 +558,20 @@ export default function OrdersScreen() {
             <Card padded={false}>
               <EmptyState
                 icon="receipt-outline"
-                title={orders.error ? 'Couldn\u2019t load orders' : debounced ? 'No matching orders' : 'No orders yet'}
+                title={
+                  orders.error ? 'Couldn\u2019t load orders'
+                    : debounced ? 'No matching orders'
+                      : preset !== 'all' ? 'No orders in this period'
+                        : 'No orders yet'
+                }
                 message={
                   orders.error
                     ? orders.error
                     : debounced
                       ? `Nothing matches \u201C${debounced}\u201D.`
-                      : 'Completed sales will show up here.'
+                      : preset !== 'all'
+                        ? `Nothing was ordered ${rangeLabel(preset, range)}. Try a wider range.`
+                        : 'Completed sales will show up here.'
                 }
                 action={orders.error ? { label: 'Try again', onPress: orders.reload } : undefined}
               />

@@ -3,8 +3,8 @@ import { Alert, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  Avatar, Badge, Card, Chips, EmptyState, FormModal, IconButton, ListRow,
-  PagedList, RowCard, Screen, SearchField, SkeletonList, TextField, Toggle, TopBar,
+  Avatar, Badge, Button, Card, Chips, EmptyState, FormModal, List, ListRow, PagedList, Press,
+  RowCard, Screen, SearchField, Segmented, Sheet, SkeletonList, TextField, Toggle, TopBar,
 } from '../components/ui';
 import { usePaginatedList } from '../lib/usePaginatedList';
 import { useAuth } from '../context/AuthContext';
@@ -23,7 +23,7 @@ const PAGE_SIZE = 20;
 type RoleFilter = 'all' | UserRole;
 
 const ROLE_FILTERS: { key: RoleFilter; label: string }[] = [
-  { key: 'all', label: 'Everyone' },
+  { key: 'all', label: 'All' },
   { key: 'super_admin', label: 'Admins' },
   { key: 'manager', label: 'Managers' },
   { key: 'cashier', label: 'Cashiers' },
@@ -41,6 +41,7 @@ function isValidEmail(s: string): boolean {
 function emptyForm() {
   return {
     name: '',
+    username: '',
     email: '',
     password: '',
     role: 'cashier' as UserRole,
@@ -64,6 +65,8 @@ function UserForm({
   onSaved: () => void;
 }) {
   const isEdit = !!editing;
+  // Ambel accounts sign in by username, with email as an optional contact.
+  const usesUsername = useAuth().backend === 'ambel';
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -78,6 +81,7 @@ function UserForm({
     if (editing) {
       setForm({
         name: editing.name,
+        username: editing.username ?? '',
         email: editing.email,
         password: '',
         role: editing.role,
@@ -96,7 +100,13 @@ function UserForm({
 
   const validate = (): string | null => {
     if (!form.name.trim()) return 'Name is required.';
-    if (!isValidEmail(form.email.trim())) return 'A valid email is required.';
+    if (usesUsername) {
+      if (!form.username.trim()) return 'Username is required.';
+      if (/\s/.test(form.username.trim())) return 'Username can’t contain spaces.';
+      if (form.email.trim() && !isValidEmail(form.email.trim())) return 'Please enter a valid email.';
+    } else if (!isValidEmail(form.email.trim())) {
+      return 'A valid email is required.';
+    }
     if (!isEdit && form.password.length < 6) return 'Password must be at least 6 characters.';
     if (isEdit && form.password && form.password.length < 6) return 'New password must be at least 6 characters.';
     return null;
@@ -112,6 +122,7 @@ function UserForm({
       if (isEdit && editing) {
         const dto: Partial<UserPayload> = {
           name: form.name.trim(),
+          ...(usesUsername ? { username: form.username.trim().toLowerCase() } : {}),
           email: form.email.trim().toLowerCase(),
           role: form.role,
           isActive: form.isActive,
@@ -122,6 +133,7 @@ function UserForm({
       } else {
         await usersService.create({
           name: form.name.trim(),
+          ...(usesUsername ? { username: form.username.trim().toLowerCase() } : {}),
           email: form.email.trim().toLowerCase(),
           password: form.password,
           role: form.role,
@@ -176,6 +188,16 @@ function UserForm({
       error={error}
     >
       <TextField label="Full name" value={form.name} onChangeText={v => set('name', v)} placeholder="e.g. Sok Dara" autoCapitalize="words" />
+      {usesUsername && (
+        <TextField
+          label="Username"
+          value={form.username}
+          onChangeText={v => set('username', v)}
+          placeholder="e.g. dara"
+          icon="person-outline"
+          hint="Used to sign in."
+        />
+      )}
       <TextField
         label="Email"
         value={form.email}
@@ -183,6 +205,7 @@ function UserForm({
         placeholder="name@bongpos.com"
         keyboardType="email-address"
         icon="mail-outline"
+        optional={usesUsername}
       />
       <TextField
         label={isEdit ? 'New password' : 'Password'}
@@ -257,8 +280,9 @@ const f = StyleSheet.create({
 
 export default function UsersScreen() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, backend } = useAuth();
   const isAdmin = user?.role === 'super_admin';
+  const usesUsername = backend === 'ambel';
 
   const [branches, setBranches] = useState<Branch[]>([]);
   const [roleFilter, setRoleFilter] = useState<RoleFilter>('all');
@@ -292,8 +316,13 @@ export default function UsersScreen() {
   // Managers are locked to one branch — derive its name from the scoped list.
   const managerBranchName = !isAdmin ? staff.items.map(branchName).find(Boolean) ?? '' : '';
   const roleFilters = isAdmin ? ROLE_FILTERS : ROLE_FILTERS.filter(r => r.key !== 'super_admin');
+  const [branchOpen, setBranchOpen] = useState(false);
+  const branchLabel = branchFilter === 'all'
+    ? 'All branches'
+    : branches.find(b => b._id === branchFilter)?.name ?? 'Branch';
 
   const openCreate = () => { setEditing(null); setFormOpen(true); };
+  const openEdit = (member: User) => { setEditing(member); setFormOpen(true); };
 
   return (
     <Screen
@@ -304,7 +333,7 @@ export default function UsersScreen() {
         <TopBar
           title="Staff"
           onBack={() => router.back()}
-          right={<IconButton icon="add" variant="filled" size={38} onPress={openCreate} label="Add user" />}
+          right={<Button label="Add" icon="add" size="sm" variant="secondary" onPress={openCreate} />}
         />
       }
     >
@@ -318,26 +347,30 @@ export default function UsersScreen() {
         loadingMore={staff.loadingMore}
         hasMore={staff.hasMore}
         total={staff.total}
-        noun="accounts"
+        noun="people"
         header={
           <>
+            <SearchField
+              value={search}
+              onChangeText={setSearch}
+              placeholder={usesUsername ? 'Search name or username' : 'Search name or email'}
+            />
+            <Segmented options={roleFilters} value={roleFilter} onChange={setRoleFilter} />
+
             <View style={s.summary}>
               <Text style={text.caption}>
-                {plural(staff.total, 'account')}{managerBranchName ? ` · ${managerBranchName}` : ''}
+                {staff.loading ? 'Loading…' : plural(staff.total, 'person', 'people')}
               </Text>
-              <Text style={text.micro}>{staff.items.filter(u => !u.isActive).length} inactive shown</Text>
+              {isAdmin && branches.length > 0 ? (
+                <Press onPress={() => setBranchOpen(true)} scaleTo={0.96} style={s.branchBtn} accessibilityLabel="Filter by branch">
+                  <Ionicons name="business-outline" size={13} color={colors.text} />
+                  <Text style={[text.smallStrong, s.branchLabel]} numberOfLines={1}>{branchLabel}</Text>
+                  <Ionicons name="chevron-down" size={13} color={colors.textTertiary} />
+                </Press>
+              ) : !!managerBranchName && (
+                <Text style={text.caption} numberOfLines={1}>{managerBranchName}</Text>
+              )}
             </View>
-
-            <SearchField value={search} onChangeText={setSearch} placeholder="Search by name or email" />
-            <Chips options={roleFilters} value={roleFilter} onChange={setRoleFilter} />
-
-            {isAdmin && branches.length > 0 && (
-              <Chips
-                options={[{ key: 'all', label: 'All branches' }, ...branches.map(b => ({ key: b._id, label: b.name }))]}
-                value={branchFilter}
-                onChange={setBranchFilter}
-              />
-            )}
           </>
         }
         empty={
@@ -366,21 +399,32 @@ export default function UsersScreen() {
         }
         renderItem={({ item, index }) => (
           <RowCard first={index === 0} last={index === staff.items.length - 1}>
-            <ListRow
-              title={item.name}
-              subtitle={item.email}
-              leading={<Avatar name={item.name} size={42} tone={item.isActive ? 'solid' : 'sunken'} muted={!item.isActive} />}
-              badge={!item.isActive ? <Badge label="Inactive" tone="outline" /> : undefined}
-              meta={[
-                { icon: 'shield-outline', text: ROLE_LABEL[item.role] ?? item.role },
-                ...(branchName(item) ? [{ icon: 'business-outline' as const, text: branchName(item) }] : []),
-              ]}
-              onPress={() => { setEditing(item); setFormOpen(true); }}
-              chevron
-            />
+            <StaffRow member={item} usesUsername={usesUsername} onPress={() => openEdit(item)} />
           </RowCard>
         )}
       />
+
+      {isAdmin && (
+        <Sheet visible={branchOpen} onClose={() => setBranchOpen(false)} title="Branch">
+          <List>
+            {[{ _id: 'all', name: 'All branches' }, ...branches].map(branch => (
+              <ListRow
+                key={branch._id}
+                title={branch.name}
+                compact
+                leading={
+                  <Ionicons
+                    name={branchFilter === branch._id ? 'checkmark-circle' : 'ellipse-outline'}
+                    size={20}
+                    color={branchFilter === branch._id ? colors.text : colors.textTertiary}
+                  />
+                }
+                onPress={() => { setBranchFilter(branch._id); setBranchOpen(false); }}
+              />
+            ))}
+          </List>
+        </Sheet>
+      )}
 
       <UserForm
         visible={formOpen}
@@ -396,6 +440,68 @@ export default function UsersScreen() {
   );
 }
 
+// ─── Row ──────────────────────────────────────────────────────────────────────
+
+/**
+ * One person: who they are, how they sign in and where they work on the left,
+ * their role on the right. Admins get the filled avatar so they stand out in a
+ * long list; inactive accounts fade back.
+ */
+function StaffRow({ member, usesUsername, onPress }: { member: User; usesUsername: boolean; onPress: () => void }) {
+  const handle = usesUsername && member.username ? `@${member.username}` : member.email;
+  const where = member.role === 'super_admin' ? 'All branches' : branchName(member);
+  const detail = [handle, where].filter(Boolean).join('  \u00B7  ');
+
+  return (
+    <Press onPress={onPress} scaleTo={0.99}>
+      <View style={s.row}>
+        <Avatar
+          name={member.name}
+          size={40}
+          tone={member.role === 'super_admin' ? 'solid' : 'sunken'}
+          muted={!member.isActive}
+        />
+        <View style={s.rowBody}>
+          <Text style={[text.bodyStrong, !member.isActive && s.faded]} numberOfLines={1}>{member.name}</Text>
+          {!!detail && <Text style={text.caption} numberOfLines={1}>{detail}</Text>}
+        </View>
+        {member.isActive
+          ? <Text style={text.micro}>{ROLE_LABEL[member.role] ?? member.role}</Text>
+          : <Badge label="Inactive" tone="outline" />}
+      </View>
+    </Press>
+  );
+}
+
 const s = StyleSheet.create({
-  summary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  summary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: space.md,
+    minHeight: 32,
+  },
+  branchBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.xs + 2,
+    maxWidth: '60%',
+    paddingHorizontal: space.md,
+    paddingVertical: space.xs + 2,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  branchLabel: { flexShrink: 1 },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.md + 2,
+    backgroundColor: colors.surface,
+  },
+  rowBody: { flex: 1, gap: 2 },
+  faded: { color: colors.textSecondary },
 });

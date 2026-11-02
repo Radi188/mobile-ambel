@@ -9,6 +9,7 @@ import {
 import { usePaginatedList } from '../../lib/usePaginatedList';
 import { useAuth } from '../../context/AuthContext';
 import { productsService, ProductPayload } from '../../services/products.service';
+import { menuExportService } from '../../services/menuExport.service';
 import { useResponsive } from '../../lib/responsive';
 import { Branch, Category, Product } from '../../types/api.types';
 import { colors, layout, money2, plural, radius, shadow, space, text } from '../../constants/theme';
@@ -457,6 +458,7 @@ export default function ProductsScreen() {
   const [debounced, setDebounced] = useState('');
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Product | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   // Debounce the search box so we don't hit the API on every keystroke.
   useEffect(() => {
@@ -513,6 +515,17 @@ export default function ProductsScreen() {
 
   const openCreate = () => { setEditing(null); setFormOpen(true); };
 
+  const exportMenu = async () => {
+    setExporting(true);
+    try {
+      await menuExportService.exportMenu(managerBranch?.name);
+    } catch (e: any) {
+      Alert.alert('Export failed', e?.message ?? 'Could not export the menu.');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <Screen scroll={false} padded={false} gap={0}>
       <PagedList
@@ -532,7 +545,19 @@ export default function ProductsScreen() {
             <ScreenHeader
               subtitle={managerBranch ? managerBranch.name : 'Catalogue'}
               title="Menu"
-              right={canEdit ? <Button label="New" icon="add" size="sm" onPress={openCreate} /> : undefined}
+              right={
+                <View style={s.headerActions}>
+                  <Button
+                    label="Export"
+                    icon="download-outline"
+                    variant="secondary"
+                    size="sm"
+                    loading={exporting}
+                    onPress={exportMenu}
+                  />
+                  {canEdit && <Button label="New" icon="add" size="sm" onPress={openCreate} />}
+                </View>
+              }
             />
             <SearchField value={search} onChangeText={setSearch} placeholder="Search products" />
             <Chips options={catOptions} value={selectedCat} onChange={setSelectedCat} />
@@ -593,5 +618,6 @@ export default function ProductsScreen() {
 }
 
 const s = StyleSheet.create({
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   countRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
 });

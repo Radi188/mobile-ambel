@@ -2,15 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  Avatar, Badge, Button, Card, CardHeader, Chips, DataRow, Divider, EmptyState,
-  List, ListRow, Press, Screen, ScreenHeader, Sheet, SkeletonReport, StatTile, TextField,
+  Avatar, Badge, Card, CardHeader, Chips, DataRow, Divider, EmptyState,
+  List, ListRow, Press, Screen, ScreenHeader, Sheet, SkeletonReport, StatTile,
 } from '../../components/ui';
 import { BarChart } from '../../components/charts/BarChart';
 import { Sparkline } from '../../components/charts/Sparkline';
 import { RankBar } from '../../components/charts/RankBar';
-import { allTimeRange, reportsService, ReportFilter } from '../../services/reports.service';
+import { DatePreset, DateRange, DateRangeChips, presetRange, shortDate } from '../../components/DateRange';
+import { reportsService, ReportFilter } from '../../services/reports.service';
 import { branchesService } from '../../services/branches.service';
-import { localDate } from '../../services/dashboard.service';
 import { useAuth } from '../../context/AuthContext';
 import {
   Branch, BranchReport, CashierReport, OrderSummaryReport, PaymentMethodsReport, ProductReport,
@@ -40,42 +40,9 @@ const TABS: { key: ReportTab; label: string; adminOnly?: boolean }[] = [
   { key: 'branches', label: 'Branches', adminOnly: true },
 ];
 
-type PresetKey = 'today' | 'yesterday' | 'week' | 'month' | 'last30' | 'all' | 'custom';
-type Range = { dateFrom: string; dateTo: string };
-
-function presetRange(key: Exclude<PresetKey, 'custom'>): Range {
-  if (key === 'all') return allTimeRange() as Range;
-  const now = new Date();
-  if (key === 'yesterday') {
-    const y = new Date(now);
-    y.setDate(now.getDate() - 1);
-    return { dateFrom: localDate(y), dateTo: localDate(y) };
-  }
-  const start = new Date(now);
-  if (key === 'week') start.setDate(now.getDate() - ((now.getDay() + 6) % 7)); // Monday
-  if (key === 'month') start.setDate(1);
-  if (key === 'last30') start.setDate(now.getDate() - 30);
-  return { dateFrom: localDate(start), dateTo: localDate(now) };
-}
-
-const PRESETS: { key: PresetKey; label: string }[] = [
-  { key: 'today', label: 'Today' },
-  { key: 'yesterday', label: 'Yesterday' },
-  { key: 'week', label: 'This week' },
-  { key: 'month', label: 'This month' },
-  { key: 'last30', label: 'Last 30 days' },
-  { key: 'all', label: 'All time' },
-  { key: 'custom', label: 'Custom' },
-];
-
 // ─── Formatting ───────────────────────────────────────────────────────────────
 
 const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 100) : 0);
-
-function shortDate(iso: string): string {
-  const d = new Date(`${String(iso).slice(0, 10)}T00:00:00`);
-  return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
 
 function longDate(iso: string): string {
   const d = new Date(`${String(iso).slice(0, 10)}T00:00:00`);
@@ -112,7 +79,7 @@ type ReportState<T> = { data: T | null; loading: boolean; error: string | null; 
  */
 function useReport<T>(
   fetcher: (f: ReportFilter) => Promise<T>,
-  range: Range,
+  range: DateRange,
   branchId: string | null,
   version: number,
   onSettled: () => void,
@@ -145,7 +112,7 @@ function useReport<T>(
   return { data, loading, error, reload: () => setRetry(n => n + 1) };
 }
 
-type TabProps = { range: Range; branchId: string | null; version: number; onSettled: () => void; allBranches: boolean };
+type TabProps = { range: DateRange; branchId: string | null; version: number; onSettled: () => void; allBranches: boolean };
 
 /** Loading / error / content, the same for every tab. */
 function ReportBody<T>({ state, children }: { state: ReportState<T>; children: (data: T) => React.ReactNode }) {
@@ -679,77 +646,6 @@ function BranchesTab(props: TabProps) {
   );
 }
 
-// ─── Custom range sheet ───────────────────────────────────────────────────────
-
-const isValidDate = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v));
-
-// Keeps typing in YYYY-MM-DD shape without a native picker dependency.
-function formatInput(raw: string) {
-  const digits = raw.replace(/\D/g, '').slice(0, 8);
-  if (digits.length > 6) return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6)}`;
-  if (digits.length > 4) return `${digits.slice(0, 4)}-${digits.slice(4)}`;
-  return digits;
-}
-
-function RangeSheet({ visible, current, onApply, onClose }: {
-  visible: boolean;
-  current: Range;
-  onApply: (r: Range) => void;
-  onClose: () => void;
-}) {
-  const [from, setFrom] = useState(current.dateFrom);
-  const [to, setTo] = useState(current.dateTo);
-  const [problem, setProblem] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!visible) return;
-    setFrom(current.dateFrom);
-    setTo(current.dateTo);
-    setProblem(null);
-  }, [visible]);
-
-  const apply = () => {
-    if (!isValidDate(from) || !isValidDate(to)) { setProblem('Use the YYYY-MM-DD format, e.g. 2026-01-31.'); return; }
-    if (from > to) { setProblem('The start date is after the end date.'); return; }
-    onApply({ dateFrom: from, dateTo: to });
-    onClose();
-  };
-
-  return (
-    <Sheet
-      visible={visible}
-      onClose={onClose}
-      title="Custom range"
-      subtitle="Every report follows this range"
-      footer={<Button label="Apply" size="lg" style={s.flex} onPress={apply} />}
-    >
-      <View style={s.dates}>
-        <TextField
-          label="From"
-          value={from}
-          onChangeText={v => setFrom(formatInput(v))}
-          placeholder="YYYY-MM-DD"
-          keyboardType="number-pad"
-          icon="calendar-outline"
-          maxLength={10}
-          style={s.flex}
-        />
-        <TextField
-          label="To"
-          value={to}
-          onChangeText={v => setTo(formatInput(v))}
-          placeholder="YYYY-MM-DD"
-          keyboardType="number-pad"
-          icon="calendar-outline"
-          maxLength={10}
-          style={s.flex}
-        />
-      </View>
-      {!!problem && <Text style={[text.caption, s.problem]}>{problem}</Text>}
-    </Sheet>
-  );
-}
-
 // ─── Small bits ───────────────────────────────────────────────────────────────
 
 /** Aggregates come back whole, so long lists reveal more rows locally. */
@@ -770,9 +666,8 @@ export default function ReportsScreen() {
   const isAdmin = user?.role === 'super_admin';
 
   const [tab, setTab] = useState<ReportTab>('sales');
-  const [preset, setPreset] = useState<PresetKey>('month');
-  const [range, setRange] = useState<Range>(() => presetRange('month'));
-  const [rangeOpen, setRangeOpen] = useState(false);
+  const [preset, setPreset] = useState<DatePreset>('month');
+  const [range, setRange] = useState<DateRange>(() => presetRange('month'));
   const [version, setVersion] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -800,23 +695,11 @@ export default function ReportsScreen() {
     if (!known) switchBranch(branches[0]._id);
   }, [isAdmin, activeBranchId, branches, switchBranch]);
 
-  const choosePreset = (key: PresetKey) => {
-    if (key === 'custom') { setRangeOpen(true); return; }
-    setPreset(key);
-    setRange(presetRange(key));
-  };
-
   const onRefresh = useCallback(() => {
     setRefreshing(true);
     setVersion(v => v + 1);
   }, []);
   const onSettled = useCallback(() => setRefreshing(false), []);
-
-  const presetOptions = PRESETS.map(p => (
-    p.key === 'custom' && preset === 'custom'
-      ? { key: p.key, label: `${shortDate(range.dateFrom)} – ${shortDate(range.dateTo)}` }
-      : p
-  ));
 
   const tabProps: TabProps = { range, branchId: activeBranchId, version, onSettled, allBranches: scopeAll };
 
@@ -837,7 +720,12 @@ export default function ReportsScreen() {
       />
 
       <View style={s.controls}>
-        <Chips options={presetOptions} value={preset} onChange={choosePreset} />
+        <DateRangeChips
+          preset={preset}
+          range={range}
+          onChange={(p, r) => { setPreset(p); setRange(r); }}
+          sheetSubtitle="Every report follows this range"
+        />
         <Chips options={tabs} value={tab} onChange={setTab} />
       </View>
 
@@ -848,13 +736,6 @@ export default function ReportsScreen() {
       {tab === 'products' && <ProductsTab {...tabProps} />}
       {tab === 'cashiers' && <CashiersTab {...tabProps} />}
       {tab === 'branches' && isAdmin && <BranchesTab {...tabProps} />}
-
-      <RangeSheet
-        visible={rangeOpen}
-        current={range}
-        onApply={r => { setPreset('custom'); setRange(r); }}
-        onClose={() => setRangeOpen(false)}
-      />
 
       {isAdmin && (
         <Sheet visible={branchOpen} onClose={() => setBranchOpen(false)} title="Branch">
@@ -891,9 +772,6 @@ const s = StyleSheet.create({
   rankList: { marginTop: space.md },
   muted: { marginTop: space.md },
   cardPad: { padding: space.xl, paddingBottom: space.md, gap: space.md },
-  flex: { flex: 1 },
-  dates: { flexDirection: 'row', gap: space.md },
-  problem: { color: colors.text, fontWeight: '600', marginTop: space.md },
   showMore: {
     alignItems: 'center',
     gap: 2,

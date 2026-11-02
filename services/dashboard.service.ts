@@ -1,7 +1,6 @@
-import { http } from '../lib/api';
 import { Branch } from '../types/api.types';
-import { listOf, normaliseBranch } from './shape';
-import { normaliseBranchReport, ReportFilter, reportsService } from './reports.service';
+import { branchesService } from './branches.service';
+import { ReportFilter, reportsService } from './reports.service';
 
 /** YYYY-MM-DD in the device's timezone — toISOString() would give UTC, which
  *  is still yesterday before 7am in Phnom Penh. */
@@ -25,14 +24,9 @@ export const dashboardService = {
 
   getShiftReport: (f: ReportFilter) => reportsService.getShiftReport(f),
 
-  getBranchReport: async (dateFrom?: string, dateTo?: string) =>
-    normaliseBranchReport(await http.get('/reports/branches', {
-      params: { dateFrom, dateTo, from: dateFrom, to: dateTo },
-      headers: { 'x-skip-branch': '1' },
-    })),
+  getBranchReport: (dateFrom?: string, dateTo?: string) => reportsService.getBranches({ dateFrom, dateTo }),
 
-  getActiveBranches: async (): Promise<Branch[]> =>
-    listOf(await http.get('/branches')).map(normaliseBranch).filter(b => b.isActive),
+  getActiveBranches: (): Promise<Branch[]> => branchesService.getBranches(true),
 
   // Revenue for each of the last 7 days, oldest → today.
   getWeeklyRevenue: async (allBranches = false): Promise<{ label: string; value: number }[]> => {

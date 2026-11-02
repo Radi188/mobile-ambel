@@ -4,7 +4,9 @@ import { authService } from '../services/auth.service';
 import { branchesService } from '../services/branches.service';
 import { storage } from '../lib/storage';
 import { appEvents, EVENTS } from '../lib/appEvents';
-import { getApiBaseUrl, loadApiBaseUrl, normaliseBaseUrl, PRODUCTION_API_URL, setApiBaseUrl } from '../lib/serverConfig';
+import {
+  Backend, BACKENDS, getApiBaseUrl, getBackend, loadServer, normaliseBaseUrl, savedUrlFor, setServer as saveServer,
+} from '../lib/serverConfig';
 import { AuthUser } from '../types/api.types';
 
 // Super admins land on this branch by default; they can switch away from the dashboard.
@@ -17,19 +19,23 @@ type AuthContextType = {
   // Branch the app's requests are currently scoped to (via the x-branch-id header).
   // null = every branch (super admins can switch through them one by one).
   activeBranchId: string | null;
-  login: (email: string, password: string) => Promise<void>;
+  /** `identifier` is an email on BongPOS and a username on Ambel. */
+  login: (identifier: string, password: string) => Promise<void>;
   /** Re-fetch the signed-in profile (pull-to-refresh on the account screen). */
   refreshUser: () => Promise<void>;
   logout: () => Promise<void>;
   switchBranch: (branchId: string | null) => Promise<void>;
-  /** The API this device signs in to (production unless switched on the login screen). */
+  /** Which API this device signs in to: BongPOS or Ambel. */
+  backend: Backend;
+  /** That API's address (its production one unless changed on the login screen). */
   server: string;
   /**
-   * Point the app at another API. Everything from the old server — the session
-   * and the branch it was scoped to — is forgotten, so the next sign-in starts
-   * clean. Passing production (or '') forgets the override.
+   * Point the app at another backend, or another address for one. Everything
+   * from the old server — the session and the branch it was scoped to — is
+   * forgotten, so the next sign-in starts clean. Without `url` the backend's
+   * saved address is used; its default (or '') forgets the override.
    */
-  switchServer: (url: string) => Promise<string>;
+  switchServer: (backend: Backend, url?: string) => Promise<string>;
 };
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -39,6 +45,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activeBranchId, setActiveBranchId] = useState<string | null>(null);
+  const [backend, setBackend] = useState<Backend>(getBackend());
   const [server, setServer] = useState(getApiBaseUrl());
 
   const router = useRouter();
@@ -48,7 +55,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // request, then check the saved token is still good on that server.
   useEffect(() => {
     (async () => {
-      setServer(await loadApiBaseUrl());
+      const saved = await loadServer();
+      setBackend(saved.backend);
+      setServer(saved.url);
       await storage.init();
       const stored = storage.getTokenSync();
       if (stored) {
@@ -78,8 +87,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [token, segments, isLoading]);
 
-  const login = async (email: string, password: string) => {
-    const data = await authService.login(email, password);
+  const login = async (identifier: string, password: string) => {
+    const data = await authService.login(identifier, password);
     await storage.setToken(data.accessToken);
 
     // Resolve the branch requests should start scoped to:
@@ -133,18 +142,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setActiveBranchId(branchId);
   };
 
-  const switchServer = async (input: string) => {
-    const url = normaliseBaseUrl(input) || PRODUCTION_API_URL;
-    if (url === getApiBaseUrl()) return url;
-    await setApiBaseUrl(url);
+  const switchServer = async (next: Backend, input?: string) => {
+    const target = input === undefined ? await savedUrlFor(next) : normaliseBaseUrl(input) || BACKENDS[next].url;
+    if (next === getBackend() && target === getApiBaseUrl()) return target;
+    const saved = await saveServer(next, target);
     await logout();
-    setServer(url);
-    return url;
+    setBackend(saved.backend);
+    setServer(saved.url);
+    return saved.url;
   };
 
   return (
     <AuthContext.Provider
-      value={{ user, token, isLoading, activeBranchId, login, logout, switchBranch, refreshUser, server, switchServer }}
+      value={{
+        user, token, isLoading, activeBranchId, login, logout, switchBranch, refreshUser, backend, server, switchServer,
+      }}
     >
       {children}
     </AuthContext.Provider>

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Alert, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import {
-  Avatar, Badge, Card, EmptyState, FormModal, IconButton, ListRow,
+  Avatar, Badge, Button, Card, EmptyState, FormModal, ListRow,
   PagedList, RowCard, Screen, SearchField, SkeletonList, TextField, Toggle, TopBar,
 } from '../components/ui';
 import { usePaginatedList } from '../lib/usePaginatedList';
@@ -158,7 +158,7 @@ export default function BranchesScreen() {
         <TopBar
           title="Branches"
           onBack={() => router.back()}
-          right={<IconButton icon="add" variant="filled" size={38} onPress={openCreate} label="Add branch" />}
+          right={<Button label="Add" icon="add" size="sm" variant="secondary" onPress={openCreate} />}
         />
       }
     >

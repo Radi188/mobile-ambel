@@ -85,12 +85,18 @@ export function ScreenHeader({ title, subtitle, right, below }: HeaderProps) {
   );
 }
 
-/** Fixed bar for pushed routes (users, branches) with a back affordance. */
+/**
+ * Fixed bar for pushed routes (users, branches) with a back affordance. It sits
+ * on the page background with no rule, so it reads as part of the page; the
+ * title is centred on the bar itself, whatever width the side slots take.
+ */
 export function TopBar({ title, onBack, right }: { title: string; onBack?: () => void; right?: React.ReactNode }) {
   return (
     <View style={h.topBar}>
+      <View style={h.titleLayer} pointerEvents="none">
+        <Text style={[text.h2, h.topTitle]} numberOfLines={1}>{title}</Text>
+      </View>
       {onBack ? <IconButton icon="chevron-back" onPress={onBack} label="Back" size={38} /> : <View style={h.spacer} />}
-      <Text style={text.h2} numberOfLines={1}>{title}</Text>
       {right ?? <View style={h.spacer} />}
     </View>
   );
@@ -116,12 +122,12 @@ const h = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: space.md,
+    minHeight: 52,
     paddingHorizontal: space.md,
-    paddingVertical: space.sm,
-    backgroundColor: colors.surface,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    backgroundColor: colors.background,
   },
+  titleLayer: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
+  // Clear of a 38pt button plus a short action on either side.
+  topTitle: { maxWidth: '55%' },
   spacer: { width: 38 },
 });

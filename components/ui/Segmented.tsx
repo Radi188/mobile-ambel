@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Animated, LayoutChangeEvent, Pressable, StyleSheet, Text, View } from 'react-native';
 import { colors, radius, space } from '../../constants/theme';
 
@@ -18,10 +18,12 @@ export function Segmented<T extends string>({ options, value, onChange, inverse 
   const slide = useRef(new Animated.Value(options.findIndex(o => o.key === value))).current;
   const segment = width > 0 ? (width - 8) / options.length : 0;
 
-  const select = (key: T, index: number) => {
+  const index = options.findIndex(o => o.key === value);
+
+  // Follow `value`, so a change from outside (a saved choice loading) moves the thumb too.
+  useEffect(() => {
     Animated.spring(slide, { toValue: index, useNativeDriver: true, speed: 20, bounciness: 4 }).start();
-    onChange(key);
-  };
+  }, [index]);
 
   const onLayout = (e: LayoutChangeEvent) => setWidth(e.nativeEvent.layout.width);
 
@@ -47,7 +49,7 @@ export function Segmented<T extends string>({ options, value, onChange, inverse 
       {options.map((opt, idx) => {
         const on = opt.key === value;
         return (
-          <Pressable key={opt.key} style={s.segment} onPress={() => select(opt.key, idx)}>
+          <Pressable key={opt.key} style={s.segment} onPress={() => onChange(opt.key)}>
             <Text
               style={[
                 s.label,
